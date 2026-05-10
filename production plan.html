@@ -1,0 +1,2049 @@
+<!DOCTYPE html>
+<!--
+  총괄생산계획(APP) 최적화 대시보드 - 독립 실행 버전
+  ======================================================
+  [강의록 참고] 스마트제조_06_총괄생산계획 (Chunghun Ha, Hongik University, 2026)
+
+  [외부 참고 라이브러리]
+  - javascript-lp-solver: 브라우저에서 LP/IP 최적화 수행
+    출처: https://github.com/JWally/jsLPSolver
+    CDN: https://cdn.jsdelivr.net/npm/javascript-lp-solver
+  - Chart.js: 데이터 시각화
+    출처: https://www.chartjs.org/
+  - Bootstrap 5: UI 프레임워크
+    출처: https://getbootstrap.com/
+
+  [동작 방식]
+  - Flask 서버가 실행 중이면 서버 API(/optimize)를 호출합니다
+  - 서버가 없는 경우(GitHub Pages 등 정적 호스팅)에는
+    브라우저에서 직접 LP/IP 최적화를 수행합니다
+  - 어느 환경에서나 동일하게 동작합니다
+-->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>총괄생산계획 최적화 대시보드</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/javascript-lp-solver@0.4.24/prod/solver.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root {
+      --primary: #1e3a5f;
+      --secondary: #2d6a9f;
+      --accent: #1a8cba;
+      --success: #27ae60;
+      --danger: #e74c3c;
+      --warning: #f39c12;
+    }
+    body { background:#f0f4f8; font-family:'Segoe UI','Malgun Gothic',sans-serif; font-size:0.88rem; }
+
+    /* 헤더 */
+    .app-header {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 60%, var(--accent) 100%);
+      color:white; padding:1.2rem 1.5rem; box-shadow:0 3px 12px rgba(0,0,0,0.25);
+    }
+    .app-header h1 { font-size:1.5rem; font-weight:700; margin:0; }
+    .badge-chip {
+      background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.35);
+      border-radius:20px; padding:2px 10px; font-size:0.72rem; margin-left:6px;
+    }
+
+    /* 카드 */
+    .card { border:none; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.07); }
+    .card-header { border-radius:10px 10px 0 0 !important; font-weight:600; font-size:0.85rem; padding:0.6rem 1rem; }
+    .section-label { font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:#868e96; border-bottom:1.5px solid #dee2e6; padding-bottom:3px; margin:0.7rem 0 0.5rem; }
+
+    /* 수요 입력 */
+    .demand-row { display:flex; align-items:center; gap:5px; margin-bottom:3px; }
+    .demand-row .month-label { width:28px; font-size:0.75rem; color:#868e96; text-align:right; flex-shrink:0; }
+    .demand-row input { width:85px; text-align:center; font-size:0.82rem; }
+
+    /* KPI 카드 */
+    .kpi-card { border-radius:10px; color:white; padding:0.9rem; text-align:center; }
+    .kpi-label { font-size:0.72rem; opacity:.85; margin-bottom:3px; }
+    .kpi-value { font-size:1.35rem; font-weight:700; line-height:1.1; }
+    .kpi-unit  { font-size:0.7rem; opacity:.8; }
+    .kpi-c1 { background:linear-gradient(135deg,#c0392b,#e74c3c); }
+    .kpi-c2 { background:linear-gradient(135deg,#2471a3,#3498db); }
+    .kpi-c3 { background:linear-gradient(135deg,#1e8449,#27ae60); }
+    .kpi-c4 { background:linear-gradient(135deg,#d35400,#e67e22); }
+
+    /* 결과 테이블 */
+    .res-table { font-size:0.78rem; }
+    .res-table th { background:var(--primary); color:white; text-align:center; padding:5px 6px; white-space:nowrap; }
+    .res-table td { text-align:right; padding:3px 6px; }
+    .res-table td:first-child { text-align:center; font-weight:600; }
+    .res-table tr:nth-child(even) { background:#f8f9fa; }
+    .res-table .init-row { background:#e8f4fd !important; }
+
+    /* 최적화 버튼 */
+    .btn-run {
+      background:linear-gradient(135deg,var(--primary),var(--secondary));
+      color:white; border:none; border-radius:22px; padding:.55rem 1.5rem;
+      font-weight:600; font-size:0.9rem; width:100%; transition:.2s;
+    }
+    .btn-run:hover { transform:translateY(-2px); box-shadow:0 4px 14px rgba(0,0,0,0.22); color:white; }
+
+    /* 이론 설명 박스 */
+    .info-box {
+      background:#e8f4fd; border-left:4px solid var(--secondary); border-radius:6px;
+      padding:.65rem .9rem; font-size:0.78rem; color:#2c3e50; margin-bottom:.7rem;
+    }
+    .formula { background:#f4f4f4; border:1px solid #ddd; border-radius:5px; padding:.4rem .8rem;
+               font-family:'Courier New',monospace; font-size:0.75rem; color:#333; margin:.4rem 0; overflow-x:auto; }
+
+    /* 출처 뱃지 */
+    .src-lec { background:#dbeafe; color:#1d4ed8; border:1px solid #bfdbfe; border-radius:3px; font-size:.68rem; padding:0 4px; }
+    .src-ext { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; border-radius:3px; font-size:.68rem; padding:0 4px; }
+
+    /* 로딩 */
+    .spin-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:9999; justify-content:center; align-items:center; }
+    .spin-overlay.on { display:flex; }
+    .spin-box { background:white; border-radius:10px; padding:1.8rem 2.5rem; text-align:center; }
+
+    /* 상태 */
+    .ok  { color:var(--success); font-weight:700; }
+    .err { color:var(--danger);  font-weight:700; }
+    .warn{ color:var(--warning); font-weight:700; }
+
+    /* 탭 */
+    .nav-tabs .nav-link { font-size:.8rem; color:#495057; padding:.4rem .8rem; }
+    .nav-tabs .nav-link.active { font-weight:700; color:var(--primary); }
+
+    /* 반응형 */
+    @media(max-width:768px){ .app-header h1{font-size:1.1rem;} }
+
+    /* 차트 범례 행 */
+    .chart-legend-row {
+      display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+      padding:6px 8px; background:#f8f9fa; border-radius:6px;
+      font-size:0.75rem;
+    }
+    .legend-chip {
+      display:inline-flex; align-items:center; gap:4px;
+      background:white; border:1px solid #dee2e6; border-radius:12px;
+      padding:2px 8px; color:var(--c, #333); font-weight:600;
+    }
+    .legend-tip {
+      margin-left:auto; font-size:0.72rem; color:#6c757d; font-style:italic;
+    }
+
+    /* 탭 pill 스타일 오버라이드 */
+    .nav-pills .nav-link { color:#495057; border-radius:20px; }
+    .nav-pills .nav-link.active {
+      background:var(--primary) !important; color:white !important;
+    }
+    .nav-pills .nav-link:not(.active):hover { background:#e9ecef; }
+
+    /* 차트 하단 설명 박스 */
+    .chart-desc {
+      background:#f8f9fa; border-left:3px solid var(--secondary);
+      border-radius:0 6px 6px 0; padding:.55rem .85rem;
+      font-size:0.76rem; color:#495057; line-height:1.65;
+    }
+
+    /* 계획 타임라인 */
+    .timeline-wrap { overflow-x:auto; padding-bottom:4px; }
+    .timeline-row  { display:flex; gap:8px; min-width:max-content; padding:4px 2px; }
+    .month-card {
+      background:white; border:1.5px solid #dee2e6; border-radius:10px;
+      padding:8px 10px; min-width:112px; font-size:.74rem;
+    }
+    .month-card-header {
+      font-weight:700; font-size:.82rem; color:var(--primary);
+      border-bottom:1px solid #e9ecef; padding-bottom:4px; margin-bottom:5px;
+    }
+    .month-card.has-short { border-color:#f39c12; border-width:2px; }
+    .month-card.has-sub   { border-color:#9b59b6; border-width:2px; }
+    .ev-badge {
+      display:inline-block; border-radius:10px; padding:1px 6px;
+      font-size:.68rem; font-weight:600; margin-top:2px;
+    }
+    .ev-hire  { background:#d4edda; color:#155724; }
+    .ev-fire  { background:#f8d7da; color:#721c24; }
+    .ev-short { background:#fff3cd; color:#856404; }
+    .ev-sub   { background:#e2d9f3; color:#4a148c; }
+    .ev-ot    { background:#fde2b9; color:#7c4a00; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════ 헤더 ═══════════════════ -->
+<div class="app-header">
+  <div class="container-fluid">
+    <div class="d-flex flex-wrap justify-content-between align-items-center">
+      <div>
+        <h1><i class="bi bi-graph-up-arrow me-2"></i>총괄생산계획(APP) 최적화 대시보드</h1>
+        <p style="font-size:.8rem;margin:.25rem 0 0;opacity:.85;">
+          원예장비 제조업체의 Aggregate Production Planning 수립 및 시각화
+          <span class="badge-chip">🔢 LP/IP 최적화</span>
+          <span class="badge-chip">📊 실시간 대시보드</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ 이론 설명 (접기) ═══════════════════ -->
+<div class="container-fluid px-3 mt-3">
+  <div class="card mb-3">
+    <div class="card-header bg-light" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#theory">
+      <i class="bi bi-book text-primary me-2"></i>
+      총괄생산계획(APP)이란? — 이론 설명 보기/접기
+    </div>
+    <div class="collapse" id="theory">
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-md-4">
+            <div class="info-box">
+              <strong>📋 총괄생산계획(APP)이란?</strong><br><br>
+              <strong>제품군(Product Family)</strong> 단위의
+              <strong>중기(3~18개월) 생산계획</strong>입니다.<br><br>
+              수요 예측을 기반으로 인력 수준, 재고량, 외주 여부 등을 결정하여
+              <strong>총 비용을 최소화</strong>합니다.<br><br>
+              <em>ERP에서는 "S&OP (Sales &amp; Operations Planning)"이라고도 합니다.</em>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="info-box">
+              <strong>🔢 목적함수 (비용 최소화)</strong>
+              <div class="formula">
+Z = Σ[ 640·W_t  ← 정규 노무비
+      + 6·O_t   ← 초과근무비
+      + 300·H_t ← 고용비용
+      + 500·L_t ← 해고비용
+      + 2·I_t   ← 재고유지비
+      + 5·S_t   ← 부족재고비
+      + 10·P_t  ← 재료비
+      + 30·C_t  ← 하청비용 ]
+              </div>
+              <small>※ 파라미터 변경 시 계수가 자동 재계산됩니다</small>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="info-box">
+              <strong>📐 제약조건</strong>
+              <div class="formula">
+노동력 균형:
+  W_t = W_{t-1} + H_t - L_t
+
+생산능력:
+  P_t ≤ 40·W_t + (1/4)·O_t
+
+재고 균형:
+  I_t = I_{t-1} + P_t + C_t
+        - D_t - S_{t-1} + S_t
+
+초과근무 한도:
+  O_t ≤ 10·W_t
+
+초기: W₀=80명, I₀=1000개
+최종: I_T≥500개, S_T=0
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row g-3 mt-1">
+          <div class="col-12">
+            <div class="info-box" style="background:#f0fdf4; border-color:#27ae60;">
+              <strong>💡 LP vs IP 차이</strong><br>
+              <strong>LP (연속형)</strong>: 소수점 허용 → 수학적 최솟값 제공. 계산 빠름.<br>
+              <strong>IP (정수형)</strong>: 정수만 허용 → "2.7명" 대신 "3명"처럼 현실적인 계획. 계산 느림.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ 메인 레이아웃 ═══════════════════ -->
+<div class="container-fluid px-3 pb-5">
+  <div class="row g-3">
+
+    <!-- ────── 좌측: 입력 패널 ────── -->
+    <div class="col-xl-3 col-lg-4">
+
+      <!-- 수요 입력 -->
+      <div class="card mb-3">
+        <div class="card-header text-white" style="background:var(--primary);">
+          <i class="bi bi-bar-chart-line me-1"></i>수요 예측 입력
+        </div>
+        <div class="card-body p-2">
+          <p class="text-muted mb-2" style="font-size:.75rem;">
+            월별 예상 수요량(개)을 입력하세요. 기본값: [1600, 3000, 3200, 3800, 2200, 2200]
+          </p>
+          <div id="demandContainer"></div>
+          <div class="d-flex gap-2 mt-2">
+            <button class="btn btn-sm btn-outline-success flex-fill" onclick="addMonth()">
+              <i class="bi bi-plus-circle me-1"></i>월 추가
+            </button>
+            <button class="btn btn-sm btn-outline-danger flex-fill" onclick="removeMonth()">
+              <i class="bi bi-dash-circle me-1"></i>월 삭제
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 비용 파라미터 -->
+      <div class="card mb-3">
+        <div class="card-header text-white" style="background:#2d6a9f;">
+          <i class="bi bi-cash-coin me-1"></i>비용 파라미터
+        </div>
+        <div class="card-body p-2">
+          <div class="section-label">노무비 </div>
+          <div class="row g-1">
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">정규임금 (천원/시간)</label>
+              <input type="number" id="p_regular_wage" class="form-control form-control-sm" value="4" min="0" step=".5"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">초과근무임금 (천원/시간)</label>
+              <input type="number" id="p_overtime_wage" class="form-control form-control-sm" value="6" min="0" step=".5"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">고용비용 (천원/인)</label>
+              <input type="number" id="p_hiring_cost" class="form-control form-control-sm" value="300" min="0"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">해고비용 (천원/인)</label>
+              <input type="number" id="p_firing_cost" class="form-control form-control-sm" value="500" min="0"></div>
+          </div>
+          <div class="section-label">재고·생산비 </div>
+          <div class="row g-1">
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">재고유지비 (천원/개/월)</label>
+              <input type="number" id="p_inventory_cost" class="form-control form-control-sm" value="2" min="0" step=".5"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">부재고비용 (천원/개/월)</label>
+              <input type="number" id="p_shortage_cost" class="form-control form-control-sm" value="5" min="0" step=".5"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">재료비 (천원/개)</label>
+              <input type="number" id="p_material_cost" class="form-control form-control-sm" value="10" min="0"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">하청비용 (천원/개)</label>
+              <input type="number" id="p_subcontract_cost" class="form-control form-control-sm" value="30" min="0"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 생산 파라미터 -->
+      <div class="card mb-3">
+        <div class="card-header text-white" style="background:#16a085;">
+          <i class="bi bi-gear me-1"></i>생산 파라미터 <span class="src-lec ms-1">강의록</span>
+        </div>
+        <div class="card-body p-2">
+          <div class="row g-1">
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">작업일수 (일/월)</label>
+              <input type="number" id="p_work_days" class="form-control form-control-sm" value="20" min="1" max="31"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">작업시간 (시간/일)</label>
+              <input type="number" id="p_hours_per_day" class="form-control form-control-sm" value="8" min="1" max="24"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">최대초과시간 (시간/인/월)</label>
+              <input type="number" id="p_max_overtime" class="form-control form-control-sm" value="10" min="0"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">작업표준시간 (시간/개)</label>
+              <input type="number" id="p_std_hours" class="form-control form-control-sm" value="4" min=".1" step=".5"></div>
+          </div>
+          <div class="section-label mt-2">초기값 / 목표값</div>
+          <div class="row g-1">
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">초기 종업원 (명)</label>
+              <input type="number" id="p_initial_workers" class="form-control form-control-sm" value="80" min="1"></div>
+            <div class="col-6"><label class="form-label mb-0" style="font-size:.75rem;">초기 재고 (개)</label>
+              <input type="number" id="p_initial_inventory" class="form-control form-control-sm" value="1000" min="0"></div>
+            <div class="col-12"><label class="form-label mb-0" style="font-size:.75rem;">최종 최소 재고 (개 이상)</label>
+              <input type="number" id="p_final_inventory" class="form-control form-control-sm" value="500" min="0"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 실행 버튼 -->
+      <div class="card mb-3">
+        <div class="card-body p-2">
+          <div class="section-label">최적화 유형 </div>
+          <div class="d-flex gap-4 mb-2">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mtype" id="r_lp" value="LP" checked>
+              <label class="form-check-label" for="r_lp">
+                <strong>LP</strong> <small class="text-muted">(연속형)</small>
+              </label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mtype" id="r_ip" value="IP">
+              <label class="form-check-label" for="r_ip">
+                <strong>IP</strong> <small class="text-muted">(정수형)</small>
+              </label>
+            </div>
+          </div>
+          <button class="btn-run" onclick="runOptimization()">
+            <i class="bi bi-play-fill me-1"></i>최적화 실행
+          </button>
+          <div id="statusMsg" class="text-center mt-2" style="font-size:.8rem; min-height:1.2em;"></div>
+        </div>
+      </div>
+
+    </div><!-- /좌측 -->
+
+    <!-- ────── 우측: 결과 ────── -->
+    <div class="col-xl-9 col-lg-8">
+
+      <!-- KPI 4개 -->
+      <div class="row g-2 mb-3">
+        <div class="col-6 col-md-3">
+          <div class="kpi-card kpi-c1">
+            <div class="kpi-label">최소 총비용</div>
+            <div class="kpi-value" id="kpi-cost">-</div>
+            <div class="kpi-unit">천원</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="kpi-card kpi-c2">
+            <div class="kpi-label">평균 종업원</div>
+            <div class="kpi-value" id="kpi-workers">-</div>
+            <div class="kpi-unit">명/월</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="kpi-card kpi-c3">
+            <div class="kpi-label">총 생산량</div>
+            <div class="kpi-value" id="kpi-prod">-</div>
+            <div class="kpi-unit">개</div>
+          </div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="kpi-card kpi-c4">
+            <div class="kpi-label">총 외주량</div>
+            <div class="kpi-value" id="kpi-out">-</div>
+            <div class="kpi-unit">개</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 결과 테이블 -->
+      <div class="card mb-3">
+        <div class="card-header text-white d-flex justify-content-between align-items-center" style="background:#2c3e50;">
+          <span><i class="bi bi-table me-1"></i>최적 생산계획 상세표</span>
+          <span id="typeBadge" class="badge bg-warning text-dark">LP</span>
+        </div>
+        <div class="card-body p-2 overflow-auto">
+          <table class="table table-sm table-bordered res-table mb-0" id="resultTable">
+            <thead>
+              <tr>
+                <th>월</th><th>수요 D</th><th>종업원 W</th><th>고용 H</th><th>해고 L</th>
+                <th>생산 P</th><th>재고 I</th><th>부족재고 S</th><th>외주 C</th><th>잔업시간 O</th>
+              </tr>
+            </thead>
+            <tbody id="resultBody">
+              <tr><td colspan="10" class="text-center text-muted py-3">
+                <i class="bi bi-arrow-left-circle me-1"></i>좌측에서 파라미터 입력 후 "최적화 실행"을 클릭하세요
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 시각화 대시보드 탭 -->
+      <div class="card">
+        <div class="card-header text-white d-flex align-items-center" style="background:#2c3e50;">
+          <i class="bi bi-bar-chart-fill me-2"></i>
+          <strong>시각화 대시보드</strong>
+          <span id="dashboardBadge" class="badge ms-2" style="background:rgba(255,255,255,0.2);font-size:.72rem;font-weight:500;">결과 없음</span>
+        </div>
+        <div class="card-body p-2">
+          <ul class="nav nav-pills mb-0 px-1 pt-2 pb-2 gap-1" style="border-bottom:1px solid #e9ecef;">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#t1" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-graph-up me-1"></i>수요·생산·재고</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t2" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-people-fill me-1"></i>인력계획</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t3" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-pie-chart-fill me-1"></i>비용분석</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t4" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-speedometer2 me-1"></i>생산능력</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t5" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-bar-chart-steps me-1"></i>도시법</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t6" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-water me-1"></i>재고 흐름</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t7" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-graph-down-arrow me-1"></i>비용함수</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t8" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-tornado me-1"></i>민감도</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t9" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-calendar-check me-1"></i>계획 흐름</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#t10" style="font-size:.82rem;padding:.3rem .85rem;">
+              <i class="bi bi-diagram-3 me-1"></i>성능 레이더</button></li>
+          </ul>
+
+          <div class="tab-content">
+
+            <!-- 탭1: 수요·생산·재고 -->
+            <div class="tab-pane fade show active" id="t1">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#e74c3c;">■ 수요(D)</span>
+                <span class="legend-chip" style="--c:#3498db;">■ 생산+외주(P+C)</span>
+                <span class="legend-chip" style="--c:#27ae60;">— 재고(I)</span>
+                <span class="legend-chip" style="--c:#f39c12;">-- 부족재고(S)</span>
+                <span class="legend-tip">⚠ 부족재고 발생 월 = 납기 지연 위험</span>
+              </div>
+              <div style="height:310px;"><canvas id="c1"></canvas></div>
+            </div>
+
+            <!-- 탭2: 인력계획 -->
+            <div class="tab-pane fade" id="t2">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#2d6a9f;">— 종업원(W)</span>
+                <span class="legend-chip" style="--c:#27ae60;">■ 고용(H)</span>
+                <span class="legend-chip" style="--c:#e74c3c;">■ 해고(L)</span>
+                <span class="legend-chip" style="--c:#f39c12;">■ 잔업(O, hr)</span>
+                <span class="legend-tip">💡 인력 변동이 클수록 고용·해고 비용 증가</span>
+              </div>
+              <div style="height:310px;"><canvas id="c2"></canvas></div>
+            </div>
+
+            <!-- 탭3: 비용분석 -->
+            <div class="tab-pane fade" id="t3">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-tip">📊 월별 비용 구성(좌) · 전체 비용 비율(우) — 가장 큰 항목이 절감 핵심</span>
+              </div>
+              <div class="row g-2">
+                <div class="col-md-7"><div style="height:300px;"><canvas id="c3a"></canvas></div></div>
+                <div class="col-md-5"><div style="height:300px;"><canvas id="c3b"></canvas></div></div>
+              </div>
+            </div>
+
+            <!-- 탭4: 생산능력 -->
+            <div class="tab-pane fade" id="t4">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#3498db;">■ 정규시간 생산</span>
+                <span class="legend-chip" style="--c:#e67e22;">■ 잔업시간으로 생산한 초과분</span>
+                <span class="legend-chip" style="--c:#bdc3c7;">■ 미사용 정규능력</span>
+                <span class="legend-chip" style="--c:#e74c3c;">— 수요(D)</span>
+                <span class="legend-tip">💡 잔업초과분 = 실제생산 − 정규최대생산. 미사용 능력이 크면 인력 과잉 신호</span>
+              </div>
+              <div style="height:310px;"><canvas id="c4"></canvas></div>
+            </div>
+
+
+            <!-- 탭5: 도시법 – 수요 vs 생산능력 -->
+            <div class="tab-pane fade" id="t5">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#3498db;">■ 수요(정상)</span>
+                <span class="legend-chip" style="--c:#f39c12;">■ 공칭능력 초과</span>
+                <span class="legend-chip" style="--c:#e74c3c;">■ 피크능력 초과</span>
+                <span class="legend-chip" style="--c:#2d6a9f;">-- 공칭 생산능력</span>
+                <span class="legend-chip" style="--c:#27ae60;">-- 피크 생산능력</span>
+                <span class="legend-tip">💡 막대가 점선을 넘으면 잔업·외주 필요</span>
+              </div>
+              <div style="height:260px;"><canvas id="c5"></canvas></div>
+              <div id="desc5" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+            <!-- 탭6: 재고 흐름 -->
+            <div class="tab-pane fade" id="t6">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#3498db;">■ 공급(P+C)</span>
+                <span class="legend-chip" style="--c:#e74c3c;">■ 수요 차감</span>
+                <span class="legend-chip" style="--c:#27ae60;">— 기말재고(I)</span>
+                <span class="legend-chip" style="--c:#e67e22;">-- 부족재고(S)</span>
+                <span class="legend-tip">💡 파란 막대 &gt; 빨간 막대 = 재고 증가</span>
+              </div>
+              <div style="height:260px;"><canvas id="c6"></canvas></div>
+              <div id="desc6" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+            <!-- 탭7: 비용함수 곡선 -->
+            <div class="tab-pane fade" id="t7">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-tip">📈 총괄생산계획 4대 비용함수 — 빨간 점: 현재 운영점. 파라미터 변경 후 재실행하면 곡선과 점이 함께 이동합니다.</span>
+              </div>
+              <div class="row g-2">
+                <div class="col-6"><div style="height:180px;"><canvas id="c7a"></canvas></div></div>
+                <div class="col-6"><div style="height:180px;"><canvas id="c7b"></canvas></div></div>
+                <div class="col-6"><div style="height:180px;"><canvas id="c7c"></canvas></div></div>
+                <div class="col-6"><div style="height:180px;"><canvas id="c7d"></canvas></div></div>
+              </div>
+              <div id="desc7" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+            <!-- 탭8: 민감도 분석 (Tornado) -->
+            <div class="tab-pane fade" id="t8">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-chip" style="--c:#e74c3c;">■ +20% 변화 → 비용 증가</span>
+                <span class="legend-chip" style="--c:#3498db;">■ -20% 변화 → 비용 감소</span>
+                <span class="legend-tip">💡 막대가 길수록 총비용에 민감한 파라미터</span>
+              </div>
+              <div style="height:280px;"><canvas id="c8"></canvas></div>
+              <div id="desc8" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+            <!-- 탭9: 계획 흐름 타임라인 -->
+            <div class="tab-pane fade" id="t9">
+              <div class="timeline-wrap">
+                <div id="timelineRow" class="timeline-row">
+                  <div style="color:#aaa;font-size:.8rem;padding:20px;">최적화를 실행하면 계획 흐름이 표시됩니다.</div>
+                </div>
+              </div>
+              <div id="desc9" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+
+            <!-- 탭10: 성능 레이더 차트 -->
+            <div class="tab-pane fade" id="t10">
+              <div class="chart-legend-row mb-2">
+                <span class="legend-tip">🕸 현재 계획의 6가지 성능 지표를 0~100점으로 정규화 — 면적이 넓을수록 균형 잡힌 계획. LP↔IP 전환 후 비교해보세요.</span>
+              </div>
+              <div class="row g-2 align-items-center">
+                <div class="col-md-6"><div style="height:290px;"><canvas id="c10"></canvas></div></div>
+                <div class="col-md-6">
+                  <div id="radarScoreTable" style="font-size:.78rem;"></div>
+                </div>
+              </div>
+              <div id="desc10" class="chart-desc mt-2">최적화를 실행하면 분석 결과가 표시됩니다.</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /우측 -->
+  </div><!-- /row -->
+</div><!-- /container -->
+
+<!-- 로딩 오버레이 -->
+<div class="spin-overlay" id="spinOverlay">
+  <div class="spin-box">
+    <div class="spinner-border text-primary mb-2" style="width:2.5rem;height:2.5rem;"></div>
+    <div><strong>최적화 계산 중...</strong></div>
+    <div class="text-muted" style="font-size:.78rem;margin-top:3px;">
+      LP/IP 솔버가 최적해를 탐색하고 있습니다
+    </div>
+  </div>
+</div>
+
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ════════════════════════════════════════════════════════════════
+//  총괄생산계획 최적화 대시보드 - 메인 JavaScript
+//
+//  [강의록 참고] 강의록의 LP/IP 모델을 javascript-lp-solver로 구현
+//  [외부 참고]  javascript-lp-solver API: https://github.com/JWally/jsLPSolver
+//  [외부 참고]  Chart.js API: https://www.chartjs.org/docs/
+// ════════════════════════════════════════════════════════════════
+
+// ────────────────────────────────────────────────────────────────
+// 상수 정의
+// ────────────────────────────────────────────────────────────────
+
+// [강의록 참고] 기본 수요 데이터: 1월~6월
+const DEFAULT_DEMAND = [1600, 3000, 3200, 3800, 2200, 2200];
+const MONTHS = ['1월','2월','3월','4월','5월','6월',
+                '7월','8월','9월','10월','11월','12월'];
+
+// 차트 인스턴스 저장소
+let charts = {};
+
+
+// ────────────────────────────────────────────────────────────────
+// 수요 입력 UI 초기화 및 관리
+// ────────────────────────────────────────────────────────────────
+
+function initDemand() {
+  // 컨테이너 초기화
+  document.getElementById('demandContainer').innerHTML = '';
+  // 기본값으로 행 추가
+  DEFAULT_DEMAND.forEach((v, i) => addDemandRow(v, i));
+}
+
+function addMonth(val=0) {
+  const n = document.getElementById('demandContainer').children.length;
+  addDemandRow(val, n);
+}
+
+function addDemandRow(val, idx) {
+  const container = document.getElementById('demandContainer');
+  const label = MONTHS[idx % 12] || `${idx+1}월`;
+  const div = document.createElement('div');
+  div.className = 'demand-row';
+  div.innerHTML = `
+    <span class="month-label">${label}</span>
+    <input type="number" class="form-control form-control-sm demand-val" value="${val}" min="0" step="100">
+    <span style="font-size:.72rem;color:#868e96;">개</span>
+  `;
+  container.appendChild(div);
+}
+
+function removeMonth() {
+  const c = document.getElementById('demandContainer');
+  if (c.children.length > 1) c.removeChild(c.lastChild);
+  else alert('최소 1개월이 필요합니다.');
+}
+
+function getDemand() {
+  return Array.from(document.querySelectorAll('.demand-val'))
+              .map(e => parseFloat(e.value)||0);
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 파라미터 수집
+// ────────────────────────────────────────────────────────────────
+
+function getParams() {
+  const g = id => parseFloat(document.getElementById(id).value)||0;
+  return {
+    regular_wage:       g('p_regular_wage'),      // 4 천원/시간
+    overtime_wage:      g('p_overtime_wage'),     // 6 천원/시간
+    hiring_cost:        g('p_hiring_cost'),        // 300 천원/인
+    firing_cost:        g('p_firing_cost'),        // 500 천원/인
+    inventory_cost:     g('p_inventory_cost'),     // 2 천원/개/월
+    shortage_cost:      g('p_shortage_cost'),      // 5 천원/개/월
+    material_cost:      g('p_material_cost'),      // 10 천원/개
+    subcontract_cost:   g('p_subcontract_cost'),   // 30 천원/개
+    work_days:          g('p_work_days'),           // 20 일/월
+    hours_per_day:      g('p_hours_per_day'),       // 8 시간/일
+    max_overtime:       g('p_max_overtime'),        // 10 시간/인/월
+    std_hours:          g('p_std_hours'),           // 4 시간/개
+    initial_workers:    g('p_initial_workers'),     // 80 명
+    initial_inventory:  g('p_initial_inventory'),   // 1000 개
+    final_inventory_min:g('p_final_inventory'),     // 500 개
+  };
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// LP 모델 구성 함수
+// [강의록 참고] 원예장비 제조업체의 총괄생산계획 LP/IP 모델
+// [외부 참고]  javascript-lp-solver 모델 형식:
+//             https://github.com/JWally/jsLPSolver#readme
+// ────────────────────────────────────────────────────────────────
+
+function buildModel(demand, params, modelType) {
+  const T = demand.length;  // 계획기간 (개월 수)
+
+  // ── 파생 파라미터 계산 ──────────────────────────────────────
+  // [강의록 수식]
+  // 정규임금 총액 = 임금단가(4) × 하루작업시간(8) × 월작업일(20) = 640 천원/인/월
+  const regularCostPerWorker = params.regular_wage * params.hours_per_day * params.work_days;
+
+  // 정규시간 최대 생산율 = (1/표준시간) × 하루시간 × 월작업일 = (1/4)×8×20 = 40 개/인/월
+  const prodRate = params.hours_per_day * params.work_days / params.std_hours;
+
+  // 초과시간 단위당 생산량 = 1/표준시간 = 1/4 = 0.25 개/시간
+  const otProdRate = 1.0 / params.std_hours;
+
+  // ── 모델 초기화 ──────────────────────────────────────────────
+  // javascript-lp-solver 모델 구조:
+  // {
+  //   optimize: 목적함수변수이름,
+  //   opType: "min" 또는 "max",
+  //   constraints: { 제약이름: { equal/min/max: 값 }, ... },
+  //   variables: { 변수이름: { 목적함수계수, 제약1계수, 제약2계수, ... }, ... },
+  //   integers: { 정수변수이름: 1, ... }  // IP인 경우
+  // }
+  const model = {
+    optimize: "cost",
+    opType: "min",
+    constraints: {},
+    variables: {},
+    integers: {},
+    unrestricted: {}  // 기본적으로 모든 변수는 >= 0
+  };
+
+  // ── 제약조건 등록 ────────────────────────────────────────────
+
+  // [강의록] 초기값 제약: W_0 = 80, I_0 = 1000, S_0 = 0
+  model.constraints["w0"] = { equal: params.initial_workers };
+  model.constraints["i0"] = { equal: params.initial_inventory };
+  model.constraints["s0"] = { equal: 0 };
+
+  // [강의록] 최종값 제약: I_T >= 500, S_T = 0
+  model.constraints["final_i"] = { min: params.final_inventory_min };
+  model.constraints["final_s"] = { equal: 0 };
+
+  // 월별 제약 등록 (t=1..T)
+  for (let t = 1; t <= T; t++) {
+    // 노동력 균형: W_t - W_{t-1} - H_t + L_t = 0
+    model.constraints[`lb${t}`] = { equal: 0 };
+
+    // 생산능력: P_t - prodRate*W_t - otProdRate*O_t <= 0
+    model.constraints[`cp${t}`] = { max: 0 };
+
+    // 재고균형: I_t - I_{t-1} - P_t - C_t + S_{t-1} - S_t = -D_t
+    // → 좌변 변수들의 합 = -D_t
+    model.constraints[`inv${t}`] = { equal: -demand[t-1] };
+
+    // 초과근무: O_t - maxOT*W_t <= 0
+    model.constraints[`ot${t}`] = { max: 0 };
+  }
+
+  // ── 변수 정의: W_0 (초기 종업원 수) ──────────────────────────
+  // 이 변수는 초기값 고정 제약(w0)에만 참여하고
+  // 1월 노동력균형 제약에서 전월 값(W_{t-1})으로 참여
+  model.variables["W0"] = {
+    "w0": 1,       // W_0 = initial_workers
+    "lb1": -1,     // W_0이 lb1 제약의 W_{t-1}으로 참여 (계수 -1)
+  };
+
+  // ── 변수 정의: I_0 (초기 재고) ─────────────────────────────
+  // 재고균형 제약 inv1에서 I_{t-1}=I_0으로 참여
+  model.variables["I0"] = {
+    "i0": 1,       // I_0 = initial_inventory
+    "inv1": -1,    // inv1에서 -I_{t-1} = -I_0 (계수 -1)
+  };
+
+  // ── 변수 정의: S_0 (초기 부족재고) ────────────────────────
+  // 부족재고는 0으로 고정
+  model.variables["S0"] = {
+    "s0": 1,       // S_0 = 0
+    "inv1": 1,     // inv1에서 +S_{t-1} = +S_0 (계수 +1)
+  };
+
+  // ── 변수 정의: t=1..T월 변수들 ───────────────────────────────
+  for (let t = 1; t <= T; t++) {
+    const isLast = (t === T);
+
+    // ── W_t: 종업원 수 ────────────────────────────────────────
+    // [강의록] 목적함수 계수: regularCostPerWorker = 640 천원/인/월
+    const wt = { cost: regularCostPerWorker };
+    wt[`lb${t}`]  = 1;             // W_t in 노동력균형_t (계수 +1)
+    wt[`cp${t}`]  = -prodRate;     // -prodRate * W_t in 생산능력_t
+    wt[`ot${t}`]  = -params.max_overtime; // -maxOT * W_t in 초과근무_t
+    if (!isLast) wt[`lb${t+1}`] = -1;  // W_t가 다음 달 제약의 W_{t-1}로 참여
+    model.variables[`W${t}`] = wt;
+
+    // ── H_t: 고용 수 ──────────────────────────────────────────
+    // [강의록] 목적함수 계수: hiring_cost = 300 천원/인
+    model.variables[`H${t}`] = {
+      cost: params.hiring_cost,
+      [`lb${t}`]: -1,  // -H_t in 노동력균형_t
+    };
+
+    // ── L_t: 해고 수 ──────────────────────────────────────────
+    // [강의록] 목적함수 계수: firing_cost = 500 천원/인
+    model.variables[`L${t}`] = {
+      cost: params.firing_cost,
+      [`lb${t}`]: 1,   // +L_t in 노동력균형_t
+    };
+
+    // ── P_t: 생산량 ───────────────────────────────────────────
+    // [강의록] 목적함수 계수: material_cost = 10 천원/개
+    model.variables[`P${t}`] = {
+      cost: params.material_cost,
+      [`cp${t}`]: 1,    // +P_t in 생산능력_t (상한 제약)
+      [`inv${t}`]: -1,  // -P_t in 재고균형_t
+    };
+
+    // ── I_t: 재고 ─────────────────────────────────────────────
+    // [강의록] 목적함수 계수: inventory_cost = 2 천원/개/월
+    const it = { cost: params.inventory_cost };
+    it[`inv${t}`] = 1;            // +I_t in 재고균형_t
+    if (!isLast) it[`inv${t+1}`] = -1;  // I_t가 다음 달 I_{t-1}로 참여 (계수 -1)
+    if (isLast)  it["final_i"]   = 1;   // I_T in 최종재고 제약
+    model.variables[`I${t}`] = it;
+
+    // ── S_t: 부족재고 (backlog) ───────────────────────────────
+    // [강의록] 목적함수 계수: shortage_cost = 5 천원/개/월
+    // 재고균형에서: I_t - ... + S_{t-1} - S_t = -D_t → S_t 계수: -1
+    const st = { cost: params.shortage_cost };
+    st[`inv${t}`] = -1;           // -S_t in 재고균형_t
+    if (!isLast) st[`inv${t+1}`] = 1;   // S_t가 다음 달 S_{t-1}로 참여 (계수 +1)
+    if (isLast)  st["final_s"]   = 1;   // S_T in 최종부족재고 제약
+    model.variables[`S${t}`] = st;
+
+    // ── C_t: 외주(하청)량 ──────────────────────────────────────
+    // [강의록] 목적함수 계수: subcontract_cost = 30 천원/개
+    model.variables[`C${t}`] = {
+      cost: params.subcontract_cost,
+      [`inv${t}`]: -1,  // -C_t in 재고균형_t
+    };
+
+    // ── O_t: 초과근무 총 시간 ─────────────────────────────────
+    // [강의록] 목적함수 계수: overtime_wage = 6 천원/시간
+    model.variables[`O${t}`] = {
+      cost: params.overtime_wage,
+      [`cp${t}`]:  -otProdRate,  // -otProdRate * O_t in 생산능력_t
+      [`ot${t}`]:  1,            // +O_t in 초과근무_t
+    };
+
+    // IP인 경우: 모든 변수를 정수로 설정
+    if (modelType === 'IP') {
+      model.integers[`W${t}`] = 1;
+      model.integers[`H${t}`] = 1;
+      model.integers[`L${t}`] = 1;
+      model.integers[`P${t}`] = 1;
+      model.integers[`I${t}`] = 1;
+      model.integers[`S${t}`] = 1;
+      model.integers[`C${t}`] = 1;
+      model.integers[`O${t}`] = 1;  // 잔업시간도 정수 처리
+    }
+  }
+
+  return model;
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 최적화 실행 메인 함수
+// ────────────────────────────────────────────────────────────────
+
+async function runOptimization() {
+  const demand = getDemand();
+  const params = getParams();
+  const modelType = document.querySelector('input[name="mtype"]:checked').value;
+  const T = demand.length;
+
+  showSpinner(true);
+  setStatus('', '');
+
+  // 입력 유효성 검사
+  if (demand.some(d => d < 0)) {
+    showSpinner(false);
+    setStatus('err', '⚠️ 수요량은 0 이상이어야 합니다.');
+    return;
+  }
+
+  // 잠시 대기 (UI 업데이트 시간 확보)
+  await new Promise(r => setTimeout(r, 50));
+
+  try {
+    // ── 방법1: Flask 서버 API 시도 ────────────────────────────
+    // 서버가 실행 중이면 PuLP+CBC를 사용하여 더 강력한 최적화
+    let result = null;
+
+    try {
+      const resp = await fetch('/optimize', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ demand, model_type: modelType, params }),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined
+      });
+      if (resp.ok) {
+        const serverResult = await resp.json();
+        if (serverResult.status === 'optimal') {
+          result = serverResult;
+          result._solver = 'server (PuLP/CBC)';
+        }
+      }
+    } catch(e) {
+      // 서버 없음 → 클라이언트 사이드 LP로 진행
+      console.log('서버 미사용, 클라이언트 LP 실행');
+    }
+
+    // ── 방법2: 클라이언트 사이드 LP (javascript-lp-solver) ────
+    // [외부 참고] javascript-lp-solver: https://github.com/JWally/jsLPSolver
+    if (!result) {
+      const model = buildModel(demand, params, modelType);
+      const lpResult = solver.Solve(model);
+
+      if (!lpResult.feasible) {
+        showSpinner(false);
+        setStatus('err', '❌ 실현 불가능: 제약조건을 만족하는 해가 없습니다. 파라미터를 조정하세요.');
+        return;
+      }
+
+      // 결과를 서버 응답 형식으로 변환
+      result = parseLPResult(lpResult, demand, T, params, modelType);
+      result._solver = 'client (javascript-lp-solver)';
+    }
+
+    // ── IP일 때 항상 2패스 정수화 적용 ──────────────────────
+    // javascript-lp-solver의 MIP 솔버가 불안정하므로,
+    // IP 모드에서는 LP 결과의 W값을 floor() 처리한 뒤
+    // P/I/S/C/O만 다시 LP로 최적화하는 2패스 방식을 항상 사용함
+    if (modelType === 'IP' && result && !result._fromServer) {
+      const ipFixed = solveIPwithFixedW(result, demand, params, T);
+      if (ipFixed) result = ipFixed;
+    }
+
+    // ── 결과 표시 ─────────────────────────────────────────────
+    updateKPIs(result, T);
+    updateTable(result, T);
+    updateAllCharts(result, T, params);
+
+    const solverInfo = result._solver || '';
+    setStatus('ok', `✅ 최적해 발견! 총 비용: ${fmtNum(result.total_cost)}천원 [${solverInfo}]`);
+    document.getElementById('typeBadge').textContent = modelType;
+    const db = document.getElementById('dashboardBadge');
+    if (db) { db.textContent = `${modelType} · ${fmtNum(result.total_cost)}천원`; }
+
+  } catch(err) {
+    console.error(err);
+    setStatus('err', `❌ 오류: ${err.message}`);
+  } finally {
+    showSpinner(false);
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 클라이언트 LP 결과 파싱
+// ────────────────────────────────────────────────────────────────
+
+function parseLPResult(lpRes, demand, T, params, modelType) {
+  // javascript-lp-solver 결과에서 변수값 추출
+  // lpRes.result: 목적함수 최솟값
+  // lpRes['W1'], lpRes['W2'], ...: 각 변수의 최적값
+
+  const D = [0, ...demand];
+
+  // 변수값 가져오기 (없으면 0)
+  const get = name => Math.max(0, lpRes[name] || 0);
+
+  const W = Array.from({length:T+1}, (_,t) => get(`W${t}`));
+  const H = Array.from({length:T+1}, (_,t) => t===0 ? 0 : get(`H${t}`));
+  const L = Array.from({length:T+1}, (_,t) => t===0 ? 0 : get(`L${t}`));
+  const P = Array.from({length:T+1}, (_,t) => t===0 ? 0 : get(`P${t}`));
+  const I = Array.from({length:T+1}, (_,t) => get(`I${t}`));
+  const S = Array.from({length:T+1}, (_,t) => get(`S${t}`));
+  const C = Array.from({length:T+1}, (_,t) => t===0 ? 0 : get(`C${t}`));
+  const O = Array.from({length:T+1}, (_,t) => t===0 ? 0 : get(`O${t}`));
+
+  // 파생 파라미터
+  const regularCostPerWorker = params.regular_wage * params.hours_per_day * params.work_days;
+
+  // 월별 비용 분해 (시각화용)
+  const cost_breakdown = [];
+  for (let t = 1; t <= T; t++) {
+    cost_breakdown.push({
+      period: t,
+      regular_labor:  regularCostPerWorker * W[t],
+      overtime_labor: params.overtime_wage  * O[t],
+      hiring:         params.hiring_cost    * H[t],
+      firing:         params.firing_cost    * L[t],
+      inventory:      params.inventory_cost * I[t],
+      shortage:       params.shortage_cost  * S[t],
+      material:       params.material_cost  * P[t],
+      subcontract:    params.subcontract_cost * C[t],
+    });
+  }
+
+  return {
+    status: 'optimal',
+    total_cost: Math.round(lpRes.result * 10) / 10,
+    model_type: modelType,
+    periods: T,
+    demand: D,
+    W, H, L, P, I, S, C, O,
+    cost_breakdown,
+    params_used: {
+      regular_cost_per_worker: regularCostPerWorker,
+      prod_rate: params.hours_per_day * params.work_days / params.std_hours
+    }
+  };
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 2-패스 IP 고정W 재최적화
+// LP에서 얻은 소수 W값을 정수로 내림한 뒤, W를 고정 파라미터로 두고
+// P/I/S/C/O만 다시 LP로 풀어 강의록과 동일한 정수형 결과를 구함
+// ────────────────────────────────────────────────────────────────
+
+function solveIPwithFixedW(lpRes, demand, params, T) {
+  // ① 생산 관련 기본 비율 계산
+  const prodRate     = params.hours_per_day * params.work_days / params.std_hours;
+  const otProdRate   = 1.0 / params.std_hours;  // 잔업 1시간당 생산량 (=0.25개/시간)
+  // 정규 근로자 1인당 월 인건비 (정규임금 × 일근로시간 × 월근무일수)
+  const regularCostPerWorker = params.regular_wage * params.hours_per_day * params.work_days;
+
+  // ② LP 결과의 소수 W값을 정수로 내림(floor)
+  const W = [params.initial_workers]; // W[0] = 초기 인원
+  for (let t = 1; t <= T; t++) {
+    W.push(Math.floor(Math.max(0, lpRes.W[t] || 0)));
+  }
+
+  // ③ 고정된 정수 W로부터 채용(H)·해고(L) 계산
+  const H = [0], L = [0]; // 0번 인덱스는 더미
+  for (let t = 1; t <= T; t++) {
+    const diff = W[t] - W[t - 1];
+    H.push(Math.max(0, diff));   // 인원 증가 → 채용
+    L.push(Math.max(0, -diff));  // 인원 감소 → 해고
+  }
+
+  // ④ W를 상수로 고정하고, P/I/S/C/O만 결정변수로 하는 LP 모형 재구성
+  const m = {
+    optimize: 'cost',
+    opType:   'min',
+    constraints: {},
+    variables:   {},
+    integers:    {}   // 2패스에서는 연속형으로 풀어도 됨(W 이미 정수)
+  };
+
+  // 초기 재고·부족 수량 고정 (등식 제약)
+  m.constraints['i0'] = { equal: params.initial_inventory };
+  m.constraints['s0'] = { equal: 0 };
+
+  // 기간 말 최소 재고 제약 (I_T >= final_inventory_min)
+  m.constraints['final_i'] = { min: params.final_inventory_min };
+  // 기간 말 부족 수량 = 0 (등식 제약)
+  m.constraints['final_s'] = { equal: 0 };
+
+  // I0, S0를 변수로 두어 초기 조건을 연결
+  m.variables['I0'] = { i0: 1, inv1: -1 };
+  m.variables['S0'] = { s0: 1, inv1:  1 };
+
+  for (let t = 1; t <= T; t++) {
+    const isLast = (t === T);
+
+    // 생산량 상한: P_t <= prodRate × W[t]  (W는 이미 정수 상수)
+    m.constraints[`cp${t}`] = { max: prodRate * W[t] };
+
+    // 재고 균형: I_{t-1} - S_{t-1} + P_t + C_t - I_t + S_t = D_t
+    m.constraints[`inv${t}`] = { equal: -demand[t - 1] };
+
+    // 잔업 시간 상한: O_t <= max_overtime × W[t]
+    m.constraints[`ot${t}`] = { max: params.max_overtime * W[t] };
+
+    // 생산량 P_t
+    m.variables[`P${t}`] = {
+      cost: params.material_cost,
+      [`cp${t}`]: 1,
+      [`inv${t}`]: -1
+    };
+
+    // 재고 I_t
+    const it = { cost: params.inventory_cost };
+    it[`inv${t}`] = 1;
+    if (!isLast) it[`inv${t + 1}`] = -1;
+    if (isLast)  it['final_i']     =  1;
+    m.variables[`I${t}`] = it;
+
+    // 부족(백로그) S_t
+    const st = { cost: params.shortage_cost };
+    st[`inv${t}`] = -1;
+    if (!isLast) st[`inv${t + 1}`] =  1;
+    if (isLast)  st['final_s']     =  1;
+    m.variables[`S${t}`] = st;
+
+    // 외주 C_t
+    m.variables[`C${t}`] = {
+      cost: params.subcontract_cost,
+      [`inv${t}`]: -1
+    };
+
+    // 잔업 O_t (잔업 시간 → 비용은 시간당 잔업임금)
+    // cp 제약에 -otProdRate 계수: 잔업시간이 생산능력을 확장함
+    // (원본 buildModel과 동일: P_t ≤ prodRate×W[t] + otProdRate×O_t)
+    m.variables[`O${t}`] = {
+      cost: params.overtime_wage,
+      [`cp${t}`]: -otProdRate,   // 잔업 → 생산능력 확장 (계수 -1/4)
+      [`ot${t}`]: 1              // 잔업시간 상한 제약
+    };
+  }
+
+  // ⑤ LP 풀기
+  const res2 = solver.Solve(m);
+  if (!res2.feasible) return null;
+
+  const get = name => Math.max(0, res2[name] || 0);
+
+  // ⑥ 결과 배열 구성 (인덱스 0은 초기값, 1~T는 각 기간)
+  const P  = [0];
+  const Ia = [params.initial_inventory];
+  const Sa = [0];
+  const Ca = [0];
+  const Oa = [0];
+
+  for (let t = 1; t <= T; t++) {
+    P .push(Math.round(get(`P${t}`)));
+    Ia.push(Math.round(get(`I${t}`)));
+    Sa.push(Math.round(get(`S${t}`)));
+    Ca.push(Math.round(get(`C${t}`)));
+    Oa.push(Math.round(get(`O${t}`)));
+  }
+
+  // ⑦ 비용 내역 계산
+  let totalCost = 0;
+  const cost_breakdown = [];
+
+  for (let t = 1; t <= T; t++) {
+    const cb = {
+      period:        t,
+      regular_labor: regularCostPerWorker * W[t],
+      overtime_labor: params.overtime_wage * Oa[t],
+      hiring:        params.hiring_cost    * H[t],
+      firing:        params.firing_cost    * L[t],
+      inventory:     params.inventory_cost * Ia[t],
+      shortage:      params.shortage_cost  * Sa[t],
+      material:      params.material_cost  * P[t],
+      subcontract:   params.subcontract_cost * Ca[t]
+    };
+    cost_breakdown.push(cb);
+    totalCost += cb.regular_labor + cb.overtime_labor + cb.hiring + cb.firing
+               + cb.inventory + cb.shortage + cb.material + cb.subcontract;
+  }
+
+  return {
+    status:       'optimal',
+    total_cost:   Math.round(totalCost * 10) / 10,
+    model_type:   'IP',
+    periods:      T,
+    demand:       [0, ...demand],
+    W, H, L,
+    P,
+    I:  Ia,
+    S:  Sa,
+    C:  Ca,
+    O:  Oa,
+    cost_breakdown,
+    _solver:      'client-IP (2-pass fixed-W)',
+    _fromServer:  false,
+    params_used: {
+      regular_cost_per_worker: regularCostPerWorker,
+      prod_rate: prodRate
+    }
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// KPI 업데이트
+// ────────────────────────────────────────────────────────────────
+
+function updateKPIs(res, T) {
+  document.getElementById('kpi-cost').textContent    = fmtNum(res.total_cost);
+  const avgW = res.W.slice(1,T+1).reduce((a,b)=>a+b,0)/T;
+  document.getElementById('kpi-workers').textContent = avgW.toFixed(1);
+  const sumP = res.P.slice(1,T+1).reduce((a,b)=>a+b,0);
+  document.getElementById('kpi-prod').textContent    = fmtNum(sumP);
+  const sumC = res.C.slice(1,T+1).reduce((a,b)=>a+b,0);
+  document.getElementById('kpi-out').textContent     = fmtNum(sumC);
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 결과 테이블 업데이트
+// ────────────────────────────────────────────────────────────────
+
+function updateTable(res, T) {
+  const body = document.getElementById('resultBody');
+  body.innerHTML = '';
+
+  // 초기값 행
+  const initTr = document.createElement('tr');
+  initTr.className = 'init-row';
+  initTr.innerHTML = `
+    <td><strong>초기</strong></td><td>-</td>
+    <td>${f1(res.W[0])}</td><td>-</td><td>-</td><td>-</td>
+    <td>${f1(res.I[0])}</td><td>${f1(res.S[0])}</td><td>-</td><td>-</td>
+  `;
+  body.appendChild(initTr);
+
+  // 1~T월 결과
+  for (let t = 1; t <= T; t++) {
+    const tr = document.createElement('tr');
+    if (res.S[t] > 0.01) tr.style.background = '#fff3cd';  // 부족재고 있으면 노란색
+
+    const hVal = res.H[t] > 0.01 ? `<span style="color:green;font-weight:700;">+${f1(res.H[t])}</span>` : f1(res.H[t]);
+    const lVal = res.L[t] > 0.01 ? `<span style="color:red;font-weight:700;">-${f1(res.L[t])}</span>`  : f1(res.L[t]);
+    const sVal = res.S[t] > 0.01 ? `<span style="color:orange;font-weight:700;">${f1(res.S[t])}</span>` : f1(res.S[t]);
+    const cVal = res.C[t] > 0.01 ? `<span style="color:blue;font-weight:700;">${f1(res.C[t])}</span>`  : f1(res.C[t]);
+
+    tr.innerHTML = `
+      <td><strong>${MONTHS[t-1]}</strong></td>
+      <td>${fmtNum(res.demand[t])}</td>
+      <td>${f1(res.W[t])}</td>
+      <td>${hVal}</td><td>${lVal}</td>
+      <td>${f1(res.P[t])}</td><td>${f1(res.I[t])}</td>
+      <td>${sVal}</td><td>${cVal}</td><td>${f1(res.O[t])}</td>
+    `;
+    body.appendChild(tr);
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 차트 업데이트 (4개 차트)
+// [외부 참고] Chart.js: https://www.chartjs.org/docs/latest/
+// ────────────────────────────────────────────────────────────────
+
+function updateAllCharts(res, T, params) {
+  const labels = Array.from({length:T}, (_,i) => MONTHS[i]);
+  chart1_DemandProdInv(res, T, labels);
+  chart2_Workforce(res, T, labels);
+  chart3_CostAnalysis(res, T, labels);
+  chart4_Capacity(res, T, labels, params);
+  // 추가 시각화
+  chart5_LevelingStudy(res, T, labels, params);
+  chart6_InventoryFlow(res, T, labels, params);
+  chart7_CostFunctions(res, T, params);
+  chart8_Sensitivity(res, T);
+  timeline9_Plan(res, T, labels, params);
+  chart10_RadarPerformance(res, T, params);
+}
+
+// 차트1: 수요·생산·재고 혼합 차트
+function chart1_DemandProdInv(res, T, labels) {
+  destroyChart('c1');
+  const ctx = document.getElementById('c1').getContext('2d');
+  const prodTotal = Array.from({length:T}, (_,i) => (res.P[i+1]||0)+(res.C[i+1]||0));
+
+  charts['c1'] = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        { type:'bar',  label:'수요 D',        data:res.demand.slice(1),   backgroundColor:'rgba(231,76,60,.7)',   order:2 },
+        { type:'bar',  label:'생산+외주 P+C', data:prodTotal,             backgroundColor:'rgba(52,152,219,.7)', order:2 },
+        { type:'line', label:'재고 I',         data:res.I.slice(1),        borderColor:'#27ae60', backgroundColor:'rgba(39,174,96,.1)',
+          borderWidth:2.5, pointRadius:4, fill:true, yAxisID:'y2', order:1 },
+        { type:'line', label:'부족재고 S',     data:res.S.slice(1),        borderColor:'#f39c12', borderDash:[5,3],
+          borderWidth:2, pointRadius:4, fill:false, yAxisID:'y2', order:1 },
+      ]
+    },
+    options: chartOpts({
+      y2: { type:'linear', position:'right', title:{display:true,text:'재고 (개)'}, grid:{drawOnChartArea:false} }
+    })
+  });
+}
+
+// 차트2: 인력계획
+function chart2_Workforce(res, T, labels) {
+  destroyChart('c2');
+  const ctx = document.getElementById('c2').getContext('2d');
+
+  charts['c2'] = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        { type:'line', label:'종업원 W',    data:res.W.slice(1),  borderColor:'#2d6a9f', backgroundColor:'rgba(45,106,159,.12)',
+          borderWidth:3, pointRadius:4, fill:true, yAxisID:'y', order:1 },
+        { type:'bar',  label:'고용 H',      data:res.H.slice(1),  backgroundColor:'rgba(39,174,96,.75)',  yAxisID:'y2', order:2 },
+        { type:'bar',  label:'해고 L(음수)',data:res.L.slice(1).map(v=>-v), backgroundColor:'rgba(231,76,60,.75)', yAxisID:'y2', order:2 },
+        { type:'bar',  label:'잔업시간 O',  data:(res.O ? res.O.slice(1,T+1) : Array(T).fill(0)),  backgroundColor:'rgba(243,156,18,.55)', yAxisID:'y3', order:2 },
+      ]
+    },
+    options: chartOpts({
+      y: { type:'linear', position:'left', title:{display:true,text:'종업원 수 (명)'} },
+      y2:{ type:'linear', position:'right', title:{display:true,text:'고용/해고 (명)'}, grid:{drawOnChartArea:false} },
+      y3:{ type:'linear', position:'right', display:false },
+    })
+  });
+}
+
+// 차트3: 비용분석 (스택 바 + 도넛)
+function chart3_CostAnalysis(res, T, labels) {
+  destroyChart('c3a'); destroyChart('c3b');
+  const CB = res.cost_breakdown;
+  if (!CB || !CB.length) return;
+
+  const items = [
+    { key:'regular_labor',  label:'정규 노무비',  color:'#3498db' },
+    { key:'overtime_labor', label:'초과근무비',   color:'#9b59b6' },
+    { key:'hiring',         label:'고용비용',     color:'#2ecc71' },
+    { key:'firing',         label:'해고비용',     color:'#e74c3c' },
+    { key:'inventory',      label:'재고유지비',   color:'#f39c12' },
+    { key:'shortage',       label:'부족재고비',   color:'#e67e22' },
+    { key:'material',       label:'재료비',       color:'#1abc9c' },
+    { key:'subcontract',    label:'하청비용',     color:'#95a5a6' },
+  ];
+
+  // 스택 바
+  const ctxBar = document.getElementById('c3a').getContext('2d');
+  charts['c3a'] = new Chart(ctxBar, {
+    type:'bar',
+    data:{
+      labels,
+      datasets: items.map(it=>({
+        label:it.label, data:CB.map(m=>m[it.key]),
+        backgroundColor:it.color, stack:'s'
+      }))
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{position:'right',labels:{font:{size:9},boxWidth:10}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(c.raw)}천원`}}
+      },
+      scales:{
+        x:{stacked:true}, y:{stacked:true, title:{display:true,text:'비용 (천원)'}}
+      }
+    }
+  });
+
+  // 도넛
+  const totals = items.map(it=>({ label:it.label, value:CB.reduce((s,m)=>s+m[it.key],0), color:it.color }))
+                      .filter(d=>d.value>0.1);
+  const ctxPie = document.getElementById('c3b').getContext('2d');
+  charts['c3b'] = new Chart(ctxPie, {
+    type:'doughnut',
+    data:{
+      labels:totals.map(d=>d.label),
+      datasets:[{data:totals.map(d=>d.value), backgroundColor:totals.map(d=>d.color), borderWidth:2, borderColor:'#fff'}]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{position:'bottom',labels:{font:{size:9},boxWidth:10}},
+        tooltip:{callbacks:{
+          label:c=>{ const tot=c.dataset.data.reduce((a,b)=>a+b,0);
+                     return ` ${c.label}: ${fmtNum(c.raw)}천원 (${(c.raw/tot*100).toFixed(1)}%)`; }
+        }}
+      }
+    },
+    plugins:[{
+      id:'centerText',
+      afterDraw(chart){
+        const {ctx, chartArea:{left,top,right,bottom}} = chart;
+        const cx=(left+right)/2, cy=(top+bottom)/2;
+        const tot = chart.data.datasets[0].data.reduce((a,b)=>a+b,0);
+        ctx.save();
+        ctx.textAlign='center';
+        ctx.font='bold 10px Malgun Gothic';
+        ctx.fillStyle='#555';
+        ctx.fillText('총 비용', cx, cy-7);
+        ctx.font='bold 11px Malgun Gothic';
+        ctx.fillStyle='#e74c3c';
+        ctx.fillText(fmtNum(tot)+'천원', cx, cy+9);
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+// 차트4: 생산능력 활용도
+function chart4_Capacity(res, T, labels, params) {
+  destroyChart('c4');
+  const ctx = document.getElementById('c4').getContext('2d');
+  const prodRate = params.hours_per_day * params.work_days / params.std_hours;
+  const maxReg = res.W.slice(1).map(w => w * prodRate);           // 정규시간 최대 생산량
+  const actP   = res.P.slice(1);                                   // 실제 생산량
+  const regUsed   = actP.map((p,i) => Math.min(p, maxReg[i]));    // 정규시간으로 생산한 양
+  const otUsed    = actP.map((p,i) => Math.max(0, p - maxReg[i])); // 초과시간으로 생산한 양
+  const regUnused = maxReg.map((m,i) => Math.max(0, m - actP[i])); // 미사용 정규 능력
+
+  charts['c4'] = new Chart(ctx, {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        { label:'정규시간 생산',     data:regUsed,   backgroundColor:'rgba(52,152,219,.85)', stack:'s' },
+        { label:'초과시간 생산',     data:otUsed,    backgroundColor:'rgba(230,126,34,.85)', stack:'s' },
+        { label:'미사용 생산능력',   data:regUnused, backgroundColor:'rgba(52,152,219,.15)',
+          borderColor:'rgba(52,152,219,.35)', borderWidth:1, stack:'s' },
+        { type:'line', label:'수요 D', data:res.demand.slice(1), borderColor:'#e74c3c',
+          borderWidth:2.5, pointRadius:4, fill:false },
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index'},
+      plugins:{
+        legend:{position:'top', labels:{font:{size:10}}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(c.raw)}개`}}
+      },
+      scales:{
+        x:{stacked:true}, y:{stacked:true, title:{display:true,text:'생산량 (개)'}}
+      }
+    }
+  });
+}
+
+// ────────────────────────────────────────────────────────────────
+// 차트5: 도시법 – 월별 수요 vs 공칭/피크 생산능력
+// 강의록 "의사결정 상황에 따른 접근법 결정"의 막대그래프를 실제 계획값으로 구현
+// ────────────────────────────────────────────────────────────────
+
+function chart5_LevelingStudy(res, T, labels, params) {
+  destroyChart('c5');
+  const ctx = document.getElementById('c5').getContext('2d');
+
+  const prodRate  = params.hours_per_day * params.work_days / params.std_hours;
+  const otProdRate = 1.0 / params.std_hours;
+  const demand     = res.demand.slice(1, T+1);
+  const regularCap = res.W.slice(1, T+1).map(w => w * prodRate);
+  const peakCap    = res.W.slice(1, T+1).map(w => w * (prodRate + params.max_overtime * otProdRate));
+
+  const barColors = demand.map((d, i) =>
+    d > peakCap[i]    ? 'rgba(231,76,60,0.85)'  :
+    d > regularCap[i] ? 'rgba(243,156,18,0.85)' :
+                        'rgba(52,152,219,0.75)');
+
+  charts['c5'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'월별 수요 D', data:demand, backgroundColor:barColors, order:2 },
+        { type:'line', label:'공칭 생산능력(정규)', data:regularCap,
+          borderColor:'#2d6a9f', borderWidth:2, borderDash:[10,5], pointRadius:3, fill:false, order:1 },
+        { type:'line', label:'피크 생산능력(정규+잔업)', data:peakCap,
+          borderColor:'#27ae60', borderWidth:2, borderDash:[5,5], pointRadius:3, fill:false, order:1 },
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index'},
+      plugins:{
+        legend:{position:'top', labels:{font:{size:10}}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(c.raw)}개`}}
+      },
+      scales:{ x:{}, y:{title:{display:true,text:'수량 (개)'}, beginAtZero:true} }
+    }
+  });
+
+  // 동적 설명
+  const overPeak=[], overReg=[];
+  for(let t=0;t<T;t++){
+    if(demand[t]>peakCap[t]) overPeak.push(labels[t]);
+    else if(demand[t]>regularCap[t]) overReg.push(labels[t]);
+  }
+  const avgReg    = regularCap.reduce((a,b)=>a+b,0)/T;
+  const avgPeak   = peakCap.reduce((a,b)=>a+b,0)/T;
+  const avgDemand = demand.reduce((a,b)=>a+b,0)/T;
+  const util      = (avgDemand/avgReg*100).toFixed(1);
+
+  let d = `<strong>공칭 생산능력</strong>(정규 근무): 평균 <strong>${fmtNum(Math.round(avgReg))}개/월</strong> &nbsp;|&nbsp; `;
+  d += `<strong>피크 생산능력</strong>(최대 잔업 포함): 평균 <strong>${fmtNum(Math.round(avgPeak))}개/월</strong> &nbsp;|&nbsp; `;
+  d += `능력 활용률(공칭 기준): <strong>${util}%</strong><br>`;
+  if(overPeak.length>0)
+    d += `<span style="color:#e74c3c;font-weight:600;">🔴 ${overPeak.join(', ')}월: 피크 능력 초과</span> → 외주(하청)가 필수입니다. `;
+  if(overReg.length>0)
+    d += `<span style="color:#f39c12;font-weight:600;">🟡 ${overReg.join(', ')}월: 공칭 능력 초과</span> → 잔업으로 충당 가능합니다. `;
+  if(overPeak.length===0 && overReg.length===0)
+    d += `<span style="color:#27ae60;font-weight:600;">✅ 모든 월 수요가 공칭 능력 이내</span> → 정규 근무만으로 생산 가능합니다. `;
+  d += `<br><em>도시법 적용 가능 여부: 피크 능력 초과 월이 `;
+  d += overPeak.length>0
+    ? `<span style="color:#e74c3c;font-weight:600;">있으므로 수리적 방법(LP/IP) 필요</span>합니다.`
+    : `<span style="color:#27ae60;font-weight:600;">없으므로 도시법으로 해결 가능</span>합니다.`;
+  d += `</em>`;
+  document.getElementById('desc5').innerHTML = d;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 차트6: 재고 흐름 – 기간별 공급·수요·재고 균형
+// 재고균형 방정식: I_t = I_{t-1} + P_t + C_t − D_t + S_{t−1} − S_t
+// ────────────────────────────────────────────────────────────────
+
+function chart6_InventoryFlow(res, T, labels, params) {
+  destroyChart('c6');
+  const ctx = document.getElementById('c6').getContext('2d');
+
+  const supply    = Array.from({length:T}, (_,i) => (res.P[i+1]||0)+(res.C[i+1]||0));
+  const demand    = res.demand.slice(1, T+1);
+  const inventory = res.I.slice(1, T+1);
+  const shortage  = res.S.slice(1, T+1);
+
+  charts['c6'] = new Chart(ctx, {
+    data:{
+      labels,
+      datasets:[
+        { type:'bar', label:'공급(P+C)', data:supply, backgroundColor:'rgba(52,152,219,0.7)', order:2 },
+        { type:'bar', label:'수요 차감', data:demand.map(d=>-d), backgroundColor:'rgba(231,76,60,0.6)', order:2 },
+        { type:'line', label:'기말재고 I', data:inventory,
+          borderColor:'#27ae60', backgroundColor:'rgba(39,174,96,0.12)',
+          borderWidth:2.5, pointRadius:5, fill:true, yAxisID:'y2', order:1 },
+        { type:'line', label:'부족재고 S', data:shortage,
+          borderColor:'#e67e22', borderWidth:2, pointRadius:4,
+          borderDash:[5,3], fill:false, yAxisID:'y2', order:1 },
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index'},
+      plugins:{
+        legend:{position:'top', labels:{font:{size:10}}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(Math.abs(c.raw))}개`}}
+      },
+      scales:{
+        x:{},
+        y:{title:{display:true,text:'공급/수요 (개)'}},
+        y2:{type:'linear',position:'right',title:{display:true,text:'재고/부족 (개)'},grid:{drawOnChartArea:false}}
+      }
+    }
+  });
+
+  // 동적 설명
+  const totalS   = shortage.reduce((a,b)=>a+b,0);
+  const totalSub = res.C.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const maxInv   = Math.max(...inventory);
+  const minInv   = Math.min(...inventory);
+  const netFlow  = supply.map((s,i)=>s-demand[i]);
+  const surpMo   = labels.filter((_,i)=>netFlow[i]>0);
+  const defMo    = labels.filter((_,i)=>netFlow[i]<0);
+
+  let d = `초기 재고 <strong>${fmtNum(res.I[0]||0)}개</strong> → 기말 재고 <strong>${fmtNum(res.I[T]||0)}개</strong>. `;
+  d += `재고 범위: <strong>${fmtNum(minInv)} ~ ${fmtNum(maxInv)}개</strong>.<br>`;
+  if(surpMo.length>0) d+=`공급 초과(재고 증가) 월: <strong>${surpMo.join(', ')}월</strong>. `;
+  if(defMo.length>0)  d+=`수요 초과(재고 소진) 월: <strong>${defMo.join(', ')}월</strong>. `;
+  d += '<br>';
+  if(totalS>0)
+    d+=`<span style="color:#e67e22;font-weight:600;">⚠ 총 부족재고 ${fmtNum(totalS)}개</span> — 납기 지연 위험. 부족재고는 다음 기간으로 이월되어 부족재고비(<strong>${params ? params.shortage_cost : 5}천원/개</strong>)를 발생시킵니다.`;
+  else
+    d+=`<span style="color:#27ae60;font-weight:600;">✅ 부족재고 없음</span> — 모든 기간 정상 납기 가능합니다.`;
+  if(totalSub>0) d+=` &nbsp;외주 합계 <strong>${fmtNum(totalSub)}개</strong>로 부족분을 보충했습니다.`;
+  document.getElementById('desc6').innerHTML = d;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 차트7: 비용함수 곡선 (4개) – LDR 비용 함수 시각화
+// 강의록 그림: (1)정규임금 (2)고용·해고 (3)초과근무 (4)재고·부족재고
+// ────────────────────────────────────────────────────────────────
+
+function chart7_CostFunctions(res, T, params) {
+  ['c7a','c7b','c7c','c7d'].forEach(id=>destroyChart(id));
+
+  const regCostPerW = params.regular_wage * params.hours_per_day * params.work_days;
+  const prodRate    = params.hours_per_day * params.work_days / params.std_hours;
+  const N = 30;
+
+  const avgW     = res.W.slice(1,T+1).reduce((a,b)=>a+b,0)/T;
+  const hireTotal= res.H.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const fireTotal= res.L.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const netDelta = hireTotal - fireTotal;
+  const avgI     = res.I.slice(1,T+1).reduce((a,b)=>a+b,0)/T;
+  const totalOT  = res.O ? res.O.slice(1,T+1).reduce((a,b)=>a+b,0) : 0;
+  const avgOT    = totalOT/T;
+
+  // (1) 정규 임금 – 작업자 수에 선형 비례
+  const wMax = Math.max(params.initial_workers*1.8, avgW*2.5, 30);
+  const wArr = Array.from({length:N}, (_,i)=>Math.round(i*wMax/(N-1)));
+  const nearW= wArr.reduce((b,w,i)=>Math.abs(w-avgW)<Math.abs(wArr[b]-avgW)?i:b, 0);
+  charts['c7a'] = new Chart(document.getElementById('c7a').getContext('2d'),{
+    type:'line', data:{labels:wArr, datasets:[
+      {label:'정규 노무비(월)', data:wArr.map(w=>regCostPerW*w),
+       borderColor:'#3498db',borderWidth:2,pointRadius:0,fill:true,backgroundColor:'rgba(52,152,219,0.08)'},
+      {label:`현재 W≈${Math.round(avgW)}명`, data:wArr.map((_,i)=>i===nearW?regCostPerW*avgW:null),
+       pointRadius:7,pointBackgroundColor:'#e74c3c',borderColor:'#e74c3c',showLine:false}
+    ]}, options:miniChartOpts('작업자 수 Wt (명)','비용 (천원)','(1) 정규 임금')
+  });
+
+  // (2) 고용·해고 비용 – V자형 (해고 = firing_cost, 고용 = hiring_cost)
+  const delta = Math.max(params.initial_workers*0.5, 20);
+  const dArr  = Array.from({length:N}, (_,i)=>Math.round(-delta + i*2*delta/(N-1)));
+  const nearD = dArr.reduce((b,d,i)=>Math.abs(d-netDelta)<Math.abs(dArr[b]-netDelta)?i:b, 0);
+  charts['c7b'] = new Chart(document.getElementById('c7b').getContext('2d'),{
+    type:'line', data:{labels:dArr.map(d=>d>=0?`+${d}`:String(d)), datasets:[
+      {label:'고용·해고비', data:dArr.map(d=>d>=0?params.hiring_cost*d:params.firing_cost*(-d)),
+       borderColor:'#9b59b6',borderWidth:2,pointRadius:0,fill:true,backgroundColor:'rgba(155,89,182,0.08)'},
+      {label:`현재 순${netDelta>=0?'+':''}${netDelta}명`, data:dArr.map((_,i)=>i===nearD?(netDelta>=0?params.hiring_cost*netDelta:params.firing_cost*(-netDelta)):null),
+       pointRadius:7,pointBackgroundColor:'#e74c3c',borderColor:'#e74c3c',showLine:false}
+    ]}, options:miniChartOpts('인원 변화 Δ (명)','비용 (천원)','(2) 고용·해고 비용')
+  });
+
+  // (3) 초과근무 비용 – 시간에 선형 비례, 상한 존재
+  const otMax = params.max_overtime * Math.max(avgW, params.initial_workers) * 1.2;
+  const otArr = Array.from({length:N}, (_,i)=>Math.round(i*otMax/(N-1)));
+  const nearOT= otArr.reduce((b,o,i)=>Math.abs(o-avgOT)<Math.abs(otArr[b]-avgOT)?i:b, 0);
+  charts['c7c'] = new Chart(document.getElementById('c7c').getContext('2d'),{
+    type:'line', data:{labels:otArr, datasets:[
+      {label:'초과근무 비용', data:otArr.map(o=>params.overtime_wage*o),
+       borderColor:'#e67e22',borderWidth:2,pointRadius:0,fill:true,backgroundColor:'rgba(230,126,34,0.08)'},
+      {label:`현재 평균 ${Math.round(avgOT)}hr`, data:otArr.map((_,i)=>i===nearOT?params.overtime_wage*avgOT:null),
+       pointRadius:7,pointBackgroundColor:'#e74c3c',borderColor:'#e74c3c',showLine:false}
+    ]}, options:miniChartOpts('잔업시간 Ot (시간/월)','비용 (천원)','(3) 초과근무 비용')
+  });
+
+  // (4) 재고·부족재고 비용 – 비대칭 V자 (재고유지 vs 부족재고)
+  const iMax  = Math.max(avgI*3, res.I[0]*1.5, 500);
+  const iArr  = Array.from({length:N}, (_,i)=>Math.round(-iMax*0.4 + i*iMax*1.4/(N-1)));
+  const nearI = iArr.reduce((b,inv,i)=>Math.abs(inv-avgI)<Math.abs(iArr[b]-avgI)?i:b, 0);
+  charts['c7d'] = new Chart(document.getElementById('c7d').getContext('2d'),{
+    type:'line', data:{labels:iArr, datasets:[
+      {label:'재고·부족비', data:iArr.map(inv=>inv>=0?params.inventory_cost*inv:params.shortage_cost*(-inv)),
+       borderColor:'#1abc9c',borderWidth:2,pointRadius:0,fill:true,backgroundColor:'rgba(26,188,156,0.08)'},
+      {label:`현재 평균 ${Math.round(avgI)}개`, data:iArr.map((_,i)=>i===nearI?(avgI>=0?params.inventory_cost*avgI:params.shortage_cost*(-avgI)):null),
+       pointRadius:7,pointBackgroundColor:'#e74c3c',borderColor:'#e74c3c',showLine:false}
+    ]}, options:miniChartOpts('재고 It (개, 음수=부족)','비용 (천원)','(4) 재고·부족재고 비용')
+  });
+
+  // 동적 설명
+  let d = `빨간 점이 현재 계획의 <strong>운영점</strong>입니다. 파라미터를 변경하고 다시 실행하면 곡선 기울기와 운영점이 함께 이동합니다.<br>`;
+  d += `현재값: W평균 <strong>${Math.round(avgW)}명</strong> · I평균 <strong>${Math.round(avgI)}개</strong> · `;
+  d += `총잔업 <strong>${Math.round(totalOT)}hr</strong> · 고용 <strong>${hireTotal}명</strong> / 해고 <strong>${fireTotal}명</strong>. `;
+  d += `<br><em>※ (2) 고용·해고 비용의 비대칭은 해고비용(${params.firing_cost}천원)이 고용비용(${params.hiring_cost}천원)보다 `;
+  d += params.firing_cost > params.hiring_cost
+    ? `높아 인력 감축 부담이 더 큰 구조입니다.</em>`
+    : `낮아 인력 증원 부담이 더 큰 구조입니다.</em>`;
+  document.getElementById('desc7').innerHTML = d;
+}
+
+// 미니차트 공통 옵션 (비용함수 차트용)
+function miniChartOpts(xLabel, yLabel, titleText) {
+  return {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{
+      legend:{position:'top', labels:{font:{size:9},boxWidth:10,padding:3}},
+      title:{display:true, text:titleText, font:{size:10,weight:'bold'}, padding:{bottom:3}},
+      tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(c.raw)}`}}
+    },
+    scales:{
+      x:{title:{display:true,text:xLabel,font:{size:8}},
+         ticks:{font:{size:8},maxRotation:0,maxTicksLimit:6}},
+      y:{title:{display:true,text:yLabel,font:{size:8}},
+         ticks:{font:{size:8}}}
+    }
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// 차트8: 민감도 분석 (Tornado Chart)
+// 각 비용 파라미터 ±20% 변화 시 총비용에 미치는 영향 비교
+// 수량(W,P,I 등)은 고정 → 단가 변화의 직접 영향만 측정
+// ────────────────────────────────────────────────────────────────
+
+function chart8_Sensitivity(res, T) {
+  destroyChart('c8');
+  const ctx = document.getElementById('c8').getContext('2d');
+  const CB = res.cost_breakdown;
+  if(!CB || !CB.length) return;
+
+  const baseTotal = CB.reduce((s,m)=>
+    s+m.regular_labor+m.overtime_labor+m.hiring+m.firing
+     +m.inventory+m.shortage+m.material+m.subcontract, 0);
+
+  const sensItems = [
+    {label:'정규임금 단가',      key:'regular_labor'},
+    {label:'재료비 단가',        key:'material'},
+    {label:'재고유지비 단가',    key:'inventory'},
+    {label:'하청비용 단가',      key:'subcontract'},
+    {label:'부족재고비 단가',    key:'shortage'},
+    {label:'해고비용 단가',      key:'firing'},
+    {label:'고용비용 단가',      key:'hiring'},
+    {label:'초과근무임금 단가',  key:'overtime_labor'},
+  ];
+
+  const data = sensItems.map(it=>{
+    const comp = CB.reduce((s,m)=>s+(m[it.key]||0), 0);
+    return {label:it.label, highPct:comp/baseTotal*20, lowPct:-comp/baseTotal*20, comp};
+  }).sort((a,b)=>b.highPct-a.highPct);
+
+  const maxVal = Math.max(...data.map(d=>d.highPct)) * 1.35;
+
+  charts['c8'] = new Chart(ctx, {
+    type:'bar',
+    data:{
+      labels:data.map(d=>d.label),
+      datasets:[
+        {label:'+20% 변화 시 총비용 증가율', data:data.map(d=>+d.highPct.toFixed(2)),
+         backgroundColor:'rgba(231,76,60,0.75)', borderRadius:4},
+        {label:'-20% 변화 시 총비용 감소율', data:data.map(d=>+d.lowPct.toFixed(2)),
+         backgroundColor:'rgba(52,152,219,0.75)', borderRadius:4},
+      ]
+    },
+    options:{
+      indexAxis:'y',
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index'},
+      plugins:{
+        legend:{position:'top',labels:{font:{size:10}}},
+        tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${c.raw>=0?'+':''}${c.raw.toFixed(2)}%`}}
+      },
+      scales:{
+        x:{title:{display:true,text:'총비용 변화율 (%)'},min:-maxVal,max:maxVal},
+        y:{ticks:{font:{size:10}}}
+      }
+    }
+  });
+
+  // 동적 설명
+  const top1 = data[0], top2 = data[1];
+  const zeroItems = data.filter(d=>d.comp<0.01).map(d=>d.label);
+
+  let d = `<strong>민감도 분석</strong>: 현재 계획의 수량은 고정하고, 각 비용 단가를 ±20% 변화시켰을 때 총비용(현재 <strong>${fmtNum(Math.round(baseTotal))}천원</strong>)이 얼마나 달라지는지 보여줍니다.<br>`;
+  d += `가장 민감한 항목: <span style="color:#e74c3c;font-weight:600;">${top1.label}</span> — `;
+  d += `단가 20% 상승 시 총비용 <strong>+${top1.highPct.toFixed(1)}%</strong> 증가. `;
+  if(top2.highPct>0.01) d+=`다음: <strong>${top2.label}</strong> (+${top2.highPct.toFixed(1)}%). `;
+  if(zeroItems.length>0) d+=`<br>현재 미사용(수량=0)으로 영향 없음: ${zeroItems.join(', ')}.`;
+  d+=`<br><em>💡 상위 항목의 비용을 줄이거나 해당 수량을 최소화하는 것이 비용 절감의 핵심입니다.</em>`;
+  document.getElementById('desc8').innerHTML = d;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 탭9: 계획 흐름 타임라인 (HTML 카드)
+// 기간별 주요 의사결정 이벤트를 시각적으로 정리
+// ────────────────────────────────────────────────────────────────
+
+function timeline9_Plan(res, T, labels, params) {
+  const row = document.getElementById('timelineRow');
+  if(!row) return;
+
+  const prodRate = (res.params_used && res.params_used.prod_rate) ||
+                   (params.hours_per_day * params.work_days / params.std_hours);
+
+  row.innerHTML = '';
+  for(let t=1; t<=T; t++){
+    const w=res.W[t]||0, p=res.P[t]||0, inv=res.I[t]||0;
+    const h=res.H[t]||0, l=res.L[t]||0;
+    const s=res.S[t]||0, c=res.C[t]||0;
+    const o=res.O?(res.O[t]||0):0;
+    const d=res.demand[t]||0;
+    const util=w>0?Math.min(100,p/(w*prodRate)*100):0;
+
+    let cls='month-card';
+    if(s>0) cls+=' has-short';
+    else if(c>0) cls+=' has-sub';
+
+    let badges='';
+    if(h>0) badges+=`<span class="ev-badge ev-hire">+고용 ${h}명</span> `;
+    if(l>0) badges+=`<span class="ev-badge ev-fire">−해고 ${l}명</span> `;
+    if(s>0) badges+=`<span class="ev-badge ev-short">부족 ${fmtNum(s)}개</span> `;
+    if(c>0) badges+=`<span class="ev-badge ev-sub">외주 ${fmtNum(c)}개</span> `;
+    if(o>0) badges+=`<span class="ev-badge ev-ot">잔업 ${fmtNum(o)}h</span> `;
+
+    const barColor = util>=90?'#e74c3c':util>=70?'#f39c12':'#27ae60';
+    const bar = `<div style="height:5px;background:#e9ecef;border-radius:3px;margin-top:4px;">
+      <div style="width:${util.toFixed(0)}%;height:100%;background:${barColor};border-radius:3px;"></div></div>
+      <div style="font-size:.66rem;color:#999;margin-top:1px;">가동률 ${util.toFixed(0)}%</div>`;
+
+    row.innerHTML += `
+    <div class="${cls}">
+      <div class="month-card-header">${labels[t-1]}</div>
+      <div>👷 W = <strong>${w}명</strong></div>
+      <div>🏭 P = <strong>${fmtNum(p)}개</strong></div>
+      <div>📦 재고 = <strong>${fmtNum(inv)}개</strong></div>
+      <div style="color:#868e96;">📋 수요 ${fmtNum(d)}개</div>
+      ${bar}
+      <div style="margin-top:5px;">${badges||'<span style="color:#aaa;font-size:.68rem;">-</span>'}</div>
+    </div>`;
+  }
+
+  // 동적 설명
+  const evMonths=[];
+  for(let t=1;t<=T;t++){
+    const evts=[];
+    if((res.H[t]||0)>0) evts.push(`고용 ${res.H[t]}명`);
+    if((res.L[t]||0)>0) evts.push(`해고 ${res.L[t]}명`);
+    if((res.S[t]||0)>0) evts.push(`부족재고 ${fmtNum(res.S[t])}개`);
+    if((res.C[t]||0)>0) evts.push(`외주 ${fmtNum(res.C[t])}개`);
+    if(evts.length) evMonths.push(`<strong>${labels[t-1]}(${evts.join('/')})</strong>`);
+  }
+  let d=`총 <strong>${T}개월</strong> 계획. `;
+  if(evMonths.length>0) d+=`주요 이벤트: ${evMonths.join(', ')}. `;
+  else d+=`모든 기간이 안정적으로 운영됩니다 (고용·해고·외주·부족재고 없음). `;
+  d+=`<br>카드 테두리: <span style="color:#856404;font-weight:600;">주황=부족재고 발생</span>, <span style="color:#4a148c;font-weight:600;">보라=외주 발생</span>. `;
+  d+=`하단 막대는 생산능력 가동률 (<span style="color:#27ae60;">●</span>&lt;70% · <span style="color:#f39c12;">●</span>&lt;90% · <span style="color:#e74c3c;">●</span>≥90%).`;
+  document.getElementById('desc9').innerHTML = d;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 차트10: 성능 레이더 차트 – 계획의 6가지 균형 지표
+// 각 지표를 0~100으로 정규화. 면적이 클수록 균형 잡힌 계획.
+// LP↔IP 전환 후 다시 실행하면 새 결과로 업데이트됨.
+// ────────────────────────────────────────────────────────────────
+
+// 직전 결과를 저장해 모드 비교에 활용
+// T가 바뀌면 이전 결과를 폐기해 엉뚱한 비교를 막음
+const _radarHistory = { _T: null, LP: null, IP: null };
+
+function chart10_RadarPerformance(res, T, params) {
+  // ── T가 달라지면 히스토리 초기화 ──────────────────────────
+  if (_radarHistory._T !== T) {
+    _radarHistory.LP = null;
+    _radarHistory.IP = null;
+    _radarHistory._T = T;
+  }
+  destroyChart('c10');
+  const ctx = document.getElementById('c10').getContext('2d');
+
+  const prodRate = params.hours_per_day * params.work_days / params.std_hours;
+  const otProdRate = 1.0 / params.std_hours;
+
+  // ── 지표 계산 ──────────────────────────────────────────────────
+  const totalDemand   = res.demand.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const totalProd     = res.P.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const totalSub      = res.C.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const totalShortage = res.S.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const totalH        = res.H.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const totalL        = res.L.slice(1,T+1).reduce((a,b)=>a+b,0);
+  const avgI          = res.I.slice(1,T+1).reduce((a,b)=>a+b,0)/T;
+  const avgW          = res.W.slice(1,T+1).reduce((a,b)=>a+b,0)/T;
+
+  // 1. 서비스 수준: 부족재고 없을수록 높음 (0~100)
+  const s1_service = Math.max(0, 100 - (totalShortage / Math.max(totalDemand,1) * 200));
+
+  // 2. 비용 효율: 수요 대비 비용이 낮을수록 높음
+  //    기준: 재료비(10)×총수요만으로 생산 시 이론 최솟값 대비
+  const CB = res.cost_breakdown || [];
+  const totalCost = CB.reduce((s,m)=>s+m.regular_labor+m.overtime_labor+m.hiring+m.firing+m.inventory+m.shortage+m.material+m.subcontract,0);
+  const minTheoCost = params.material_cost * totalDemand;
+  const costRatio   = minTheoCost / Math.max(totalCost, 1);
+  const s2_cost     = Math.min(100, Math.max(0, costRatio * 100));
+
+  // 3. 인력 안정성: 고용+해고 합계가 적을수록 높음
+  const churnRate   = (totalH + totalL) / Math.max(avgW * T, 1);
+  const s3_workforce = Math.max(0, 100 - churnRate * 200);
+
+  // 4. 재고 안정성: 재고 과부족 없이 일정할수록 높음
+  //    변동계수(표준편차/평균)가 낮을수록 안정
+  const iArr  = res.I.slice(1,T+1);
+  const iMean = iArr.reduce((a,b)=>a+b,0)/T;
+  const iStd  = Math.sqrt(iArr.reduce((s,v)=>s+(v-iMean)**2,0)/T);
+  const iCV   = iMean>0 ? iStd/iMean : 1;
+  const s4_inventory = Math.max(0, 100 - iCV*60);
+
+  // 5. 생산능력 활용률: 80% 부근에서 최고점, 멀어질수록 감소
+  // [외부 참고] 가우시안(정규분포) 형태의 점수 함수 사용 — 불연속 없이 자연스럽게 변화
+  // 수식: score = 100 × exp(-0.5 × ((utilRate - 80) / 20)²)
+  //   → 80%에서 100점, ±20% 이탈 시 약 60점, ±40% 이탈 시 약 14점
+  const utilRate = totalProd / Math.max(avgW * prodRate * T, 1) * 100;
+  const s5_util  = Math.max(0, 100 * Math.exp(-0.5 * Math.pow((utilRate - 80) / 20, 2)));
+
+  // 6. 자체생산 비율: 외주 의존도가 낮을수록 높음
+  const s6_selfsuf = Math.max(0, 100 - (totalSub / Math.max(totalProd+totalSub,1)) * 150);
+
+  const scores = [s1_service, s2_cost, s3_workforce, s4_inventory,
+                  Math.min(100,Math.max(0,s5_util)), Math.min(100,Math.max(0,s6_selfsuf))];
+  const scoreLabels = ['서비스 수준','비용 효율','인력 안정성','재고 안정성','능력 활용률','자체생산 비율'];
+
+  // 직전 결과 저장 (LP/IP 키만 사용)
+  const modeKey = (res.model_type || 'LP') === 'IP' ? 'IP' : 'LP';
+  _radarHistory[modeKey] = { scores: [...scores], cost: Math.round(totalCost) };
+
+  // 비교할 이전 결과 (다른 모드)
+  const otherKey   = modeKey === 'LP' ? 'IP' : 'LP';
+  const otherData  = _radarHistory[otherKey];
+
+  const datasets = [
+    {
+      label: `${modeKey} (${fmtNum(Math.round(totalCost))}천원)`,
+      data:  scores.map(v=>Math.round(v*10)/10),
+      borderColor: modeKey==='LP'?'rgba(52,152,219,0.9)':'rgba(231,76,60,0.9)',
+      backgroundColor: modeKey==='LP'?'rgba(52,152,219,0.15)':'rgba(231,76,60,0.15)',
+      borderWidth: 2.5, pointRadius: 4,
+    }
+  ];
+
+  if(otherData) {
+    datasets.push({
+      label: `${otherKey} (${fmtNum(otherData.cost)}천원) — 이전 실행`,
+      data:  otherData.scores.map(v=>Math.round(v*10)/10),
+      borderColor: otherKey==='LP'?'rgba(52,152,219,0.45)':'rgba(231,76,60,0.45)',
+      backgroundColor: otherKey==='LP'?'rgba(52,152,219,0.07)':'rgba(231,76,60,0.07)',
+      borderWidth: 1.5, pointRadius: 3, borderDash:[5,4],
+    });
+  }
+
+  charts['c10'] = new Chart(ctx, {
+    type: 'radar',
+    data: { labels: scoreLabels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        r: {
+          min:0, max:100,
+          ticks: { stepSize:20, font:{size:9}, backdropColor:'transparent' },
+          pointLabels: { font:{size:10,weight:'600'} },
+          grid: { color:'rgba(0,0,0,0.08)' },
+        }
+      },
+      plugins: {
+        legend: { position:'top', labels:{font:{size:10}} },
+        tooltip: { callbacks:{ label:c=>` ${c.dataset.label.split('(')[0].trim()}: ${c.raw}점` } }
+      }
+    }
+  });
+
+  // 점수 테이블 (우측)
+  const tableEl = document.getElementById('radarScoreTable');
+  const colorOf = v => v>=80?'#27ae60':v>=55?'#f39c12':'#e74c3c';
+  const gradeOf = v => v>=80?'우수':v>=55?'보통':'주의';
+  let tbl = `<table class="table table-sm mb-1" style="font-size:.76rem;">
+    <thead><tr><th>지표</th><th style="text-align:right;">${modeKey}</th>${otherData?`<th style="text-align:right;">${otherKey}</th>`:''}
+    <th>평가</th></tr></thead><tbody>`;
+  scoreLabels.forEach((lb,i)=>{
+    const v = Math.round(scores[i]);
+    const ov = otherData ? Math.round(otherData.scores[i]) : null;
+    const diff = ov!==null ? v-ov : null;
+    tbl += `<tr>
+      <td>${lb}</td>
+      <td style="text-align:right;font-weight:700;color:${colorOf(v)};">${v}</td>
+      ${ov!==null?`<td style="text-align:right;color:${colorOf(ov)};">${ov}</td>`:''}
+      <td><span style="color:${colorOf(v)};font-weight:600;">${gradeOf(v)}</span>
+      ${diff!==null?(diff>0?`<span style="color:#27ae60;font-size:.68rem;"> ▲${diff}</span>`:diff<0?`<span style="color:#e74c3c;font-size:.68rem;"> ▼${Math.abs(diff)}</span>`:''):''}
+      </td></tr>`;
+  });
+  tbl += `</tbody></table>`;
+  tableEl.innerHTML = tbl;
+
+  // 동적 설명
+  const avg = Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
+  const weakIdx  = scores.indexOf(Math.min(...scores));
+  const strongIdx= scores.indexOf(Math.max(...scores));
+  let d = `현재 <strong>${modeKey} 계획</strong>의 6개 지표 평균: <strong>${avg}점</strong>. `;
+  d += `강점: <span style="color:#27ae60;font-weight:600;">${scoreLabels[strongIdx]}(${Math.round(scores[strongIdx])}점)</span>, `;
+  d += `개선 필요: <span style="color:#e74c3c;font-weight:600;">${scoreLabels[weakIdx]}(${Math.round(scores[weakIdx])}점)</span>.<br>`;
+  if(!otherData) {
+    d += `<em>💡 LP·IP를 모두 실행하면 두 모드의 레이더가 겹쳐 비교됩니다. 레이더 면적이 넓고 균형 잡힌 모드가 전략적으로 더 유리합니다.</em>`;
+  } else {
+    const myArea  = scores.reduce((a,b)=>a+b,0);
+    const othArea = otherData.scores.reduce((a,b)=>a+b,0);
+    d += `${modeKey}(합계 ${Math.round(myArea)}점) vs ${otherKey}(합계 ${Math.round(othArea)}점) — `;
+    d += myArea>=othArea
+      ? `<span style="color:#27ae60;font-weight:600;">${modeKey} 계획이 더 균형 잡혀 있습니다.</span>`
+      : `<span style="color:#3498db;font-weight:600;">${otherKey} 계획이 더 균형 잡혀 있습니다.</span>`;
+  }
+  document.getElementById('desc10').innerHTML = d;
+}
+
+// 차트 공통 옵션
+function chartOpts(extraScales={}) {
+  return {
+    responsive:true, maintainAspectRatio:false,
+    interaction:{mode:'index'},
+    plugins:{
+      legend:{position:'top', labels:{font:{size:10}}},
+      tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtNum(c.raw)}`}}
+    },
+    scales:{ x:{}, y:{title:{display:true,text:'수량 (개)'}}, ...extraScales }
+  };
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 유틸리티 함수
+// ────────────────────────────────────────────────────────────────
+
+// 숫자 천 단위 콤마 포맷
+// [외부 참고] Intl.NumberFormat API (ECMA-262)
+function fmtNum(n) {
+  if (n===null||n===undefined) return '-';
+  return new Intl.NumberFormat('ko-KR', {maximumFractionDigits:1}).format(n);
+}
+
+// 소수점 1자리 포맷 (정수는 .0 없이 표시)
+function f1(v) {
+  if (v===null||v===undefined||Math.abs(v)<0.001) return '0';
+  const n = parseFloat(v);
+  // 정수인 경우 소수점 생략 (예: 64.0 → 64)
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+// 차트 인스턴스 제거 (메모리 누수 방지)
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+// 로딩 스피너 표시/숨김
+function showSpinner(on) {
+  document.getElementById('spinOverlay').classList.toggle('on', on);
+}
+
+// 상태 메시지 설정
+function setStatus(cls, msg) {
+  const el = document.getElementById('statusMsg');
+  el.className = cls ? `text-center mt-2 ${cls}` : 'text-center mt-2';
+  el.innerHTML = msg;
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 페이지 초기화
+// ────────────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  initDemand();
+
+  // Chart.js 기본 설정
+  Chart.defaults.font.family = "'Malgun Gothic','Segoe UI',sans-serif";
+  Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  Chart.defaults.plugins.legend.labels.padding = 12;
+
+  // ── 탭 전환 시 차트 리사이즈 ─────────────────────────────────
+  // Bootstrap 탭은 비활성 시 display:none → canvas 크기=0으로 렌더링됨
+  // 탭이 열릴 때(shown.bs.tab) 모든 차트를 강제로 리사이즈해 올바른 크기로 표시
+  // [외부 참고] Bootstrap 5 Tab events: https://getbootstrap.com/docs/5.3/components/navs-tabs/#events
+  document.querySelectorAll('[data-bs-toggle="tab"]').forEach(btn => {
+    btn.addEventListener('shown.bs.tab', () => {
+      Object.values(charts).forEach(c => {
+        try { c.resize(); } catch(e) {}
+      });
+    });
+  });
+
+  console.log('총괄생산계획 최적화 대시보드 초기화 완료');
+  console.log('LP 솔버: javascript-lp-solver (클라이언트)');
+  console.log('[강의록 참고] Chunghun Ha, Hongik University, 2026');
+});
+</script>
+</body>
+</html>
