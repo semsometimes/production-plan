@@ -1025,117 +1025,62 @@ function parseLPResult(lpRes, demand, T, params, modelType) {
 
 
 // ────────────────────────────────────────────────────────────────
-// 2-패스 IP 고정W 재최적화
-// LP에서 얻은 소수 W값을 정수로 내림한 뒤, W를 고정 파라미터로 두고
-// P/I/S/C/O만 다시 LP로 풀어 강의록과 동일한 정수형 결과를 구함
+// [서브루틴] 주어진 W 배열로 P/I/S/C/O만 LP 최적화
+// 2-pass IP에서 floor/ceil 두 가지 W를 각각 시험할 때 호출됨
 // ────────────────────────────────────────────────────────────────
 
-function solveIPwithFixedW(lpRes, demand, params, T) {
-  // ① 생산 관련 기본 비율 계산
-  const prodRate     = params.hours_per_day * params.work_days / params.std_hours;
-  const otProdRate   = 1.0 / params.std_hours;  // 잔업 1시간당 생산량 (=0.25개/시간)
-  // 정규 근로자 1인당 월 인건비 (정규임금 × 일근로시간 × 월근무일수)
+function _solveWithFixedWArray(W, demand, params, T) {
+  const prodRate           = params.hours_per_day * params.work_days / params.std_hours;
+  const otProdRate         = 1.0 / params.std_hours;
   const regularCostPerWorker = params.regular_wage * params.hours_per_day * params.work_days;
 
-  // ② LP 결과의 소수 W값을 정수로 내림(floor)
-  const W = [params.initial_workers]; // W[0] = 초기 인원
-  for (let t = 1; t <= T; t++) {
-    W.push(Math.floor(Math.max(0, lpRes.W[t] || 0)));
-  }
-
-  // ③ 고정된 정수 W로부터 채용(H)·해고(L) 계산
-  const H = [0], L = [0]; // 0번 인덱스는 더미
+  // H, L 계산
+  const H = [0], L = [0];
   for (let t = 1; t <= T; t++) {
     const diff = W[t] - W[t - 1];
-    H.push(Math.max(0, diff));   // 인원 증가 → 채용
-    L.push(Math.max(0, -diff));  // 인원 감소 → 해고
+    H.push(Math.max(0, diff));
+    L.push(Math.max(0, -diff));
   }
 
-  // ④ W를 상수로 고정하고, P/I/S/C/O만 결정변수로 하는 LP 모형 재구성
-  const m = {
-    optimize: 'cost',
-    opType:   'min',
-    constraints: {},
-    variables:   {},
-    integers:    {}   // 2패스에서는 연속형으로 풀어도 됨(W 이미 정수)
-  };
-
-  // 초기 재고·부족 수량 고정 (등식 제약)
-  m.constraints['i0'] = { equal: params.initial_inventory };
-  m.constraints['s0'] = { equal: 0 };
-
-  // 기간 말 최소 재고 제약 (I_T >= final_inventory_min)
-  m.constraints['final_i'] = { min: params.final_inventory_min };
-  // 기간 말 부족 수량 = 0 (등식 제약)
+  // LP 모형 구성 (W는 상수, P/I/S/C/O만 결정변수)
+  const m = { optimize:'cost', opType:'min', constraints:{}, variables:{}, integers:{} };
+  m.constraints['i0']      = { equal: params.initial_inventory };
+  m.constraints['s0']      = { equal: 0 };
+  m.constraints['final_i'] = { min:   params.final_inventory_min };
   m.constraints['final_s'] = { equal: 0 };
-
-  // I0, S0를 변수로 두어 초기 조건을 연결
-  m.variables['I0'] = { i0: 1, inv1: -1 };
-  m.variables['S0'] = { s0: 1, inv1:  1 };
+  m.variables['I0'] = { i0:1, inv1:-1 };
+  m.variables['S0'] = { s0:1, inv1: 1 };
 
   for (let t = 1; t <= T; t++) {
     const isLast = (t === T);
+    m.constraints[`cp${t}`]  = { max:   prodRate * W[t] };
+    m.constraints[`inv${t}`] = { equal: -demand[t-1] };
+    m.constraints[`ot${t}`]  = { max:   params.max_overtime * W[t] };
 
-    // 생산량 상한: P_t <= prodRate × W[t]  (W는 이미 정수 상수)
-    m.constraints[`cp${t}`] = { max: prodRate * W[t] };
+    m.variables[`P${t}`] = { cost: params.material_cost, [`cp${t}`]:1, [`inv${t}`]:-1 };
 
-    // 재고 균형: I_{t-1} - S_{t-1} + P_t + C_t - I_t + S_t = D_t
-    m.constraints[`inv${t}`] = { equal: -demand[t - 1] };
-
-    // 잔업 시간 상한: O_t <= max_overtime × W[t]
-    m.constraints[`ot${t}`] = { max: params.max_overtime * W[t] };
-
-    // 생산량 P_t
-    m.variables[`P${t}`] = {
-      cost: params.material_cost,
-      [`cp${t}`]: 1,
-      [`inv${t}`]: -1
-    };
-
-    // 재고 I_t
     const it = { cost: params.inventory_cost };
     it[`inv${t}`] = 1;
-    if (!isLast) it[`inv${t + 1}`] = -1;
-    if (isLast)  it['final_i']     =  1;
+    if (!isLast) it[`inv${t+1}`] = -1;
+    if (isLast)  it['final_i']   =  1;
     m.variables[`I${t}`] = it;
 
-    // 부족(백로그) S_t
     const st = { cost: params.shortage_cost };
     st[`inv${t}`] = -1;
-    if (!isLast) st[`inv${t + 1}`] =  1;
-    if (isLast)  st['final_s']     =  1;
+    if (!isLast) st[`inv${t+1}`] =  1;
+    if (isLast)  st['final_s']   =  1;
     m.variables[`S${t}`] = st;
 
-    // 외주 C_t
-    m.variables[`C${t}`] = {
-      cost: params.subcontract_cost,
-      [`inv${t}`]: -1
-    };
-
-    // 잔업 O_t (잔업 시간 → 비용은 시간당 잔업임금)
-    // cp 제약에 -otProdRate 계수: 잔업시간이 생산능력을 확장함
-    // (원본 buildModel과 동일: P_t ≤ prodRate×W[t] + otProdRate×O_t)
-    m.variables[`O${t}`] = {
-      cost: params.overtime_wage,
-      [`cp${t}`]: -otProdRate,   // 잔업 → 생산능력 확장 (계수 -1/4)
-      [`ot${t}`]: 1              // 잔업시간 상한 제약
-    };
+    m.variables[`C${t}`] = { cost: params.subcontract_cost, [`inv${t}`]:-1 };
+    m.variables[`O${t}`] = { cost: params.overtime_wage, [`cp${t}`]:-otProdRate, [`ot${t}`]:1 };
   }
 
-  // ⑤ LP 풀기
   const res2 = solver.Solve(m);
   if (!res2.feasible) return null;
 
   const get = name => Math.max(0, res2[name] || 0);
-
-  // ⑥ 결과 배열 구성 (인덱스 0은 초기값, 1~T는 각 기간)
-  const P  = [0];
-  const Ia = [params.initial_inventory];
-  const Sa = [0];
-  const Ca = [0];
-  const Oa = [0];
-
-  for (let t = 1; t <= T; t++) {
+  const P=[0], Ia=[params.initial_inventory], Sa=[0], Ca=[0], Oa=[0];
+  for (let t=1; t<=T; t++) {
     P .push(Math.round(get(`P${t}`)));
     Ia.push(Math.round(get(`I${t}`)));
     Sa.push(Math.round(get(`S${t}`)));
@@ -1143,21 +1088,19 @@ function solveIPwithFixedW(lpRes, demand, params, T) {
     Oa.push(Math.round(get(`O${t}`)));
   }
 
-  // ⑦ 비용 내역 계산
   let totalCost = 0;
   const cost_breakdown = [];
-
-  for (let t = 1; t <= T; t++) {
+  for (let t=1; t<=T; t++) {
     const cb = {
-      period:        t,
-      regular_labor: regularCostPerWorker * W[t],
-      overtime_labor: params.overtime_wage * Oa[t],
-      hiring:        params.hiring_cost    * H[t],
-      firing:        params.firing_cost    * L[t],
-      inventory:     params.inventory_cost * Ia[t],
-      shortage:      params.shortage_cost  * Sa[t],
-      material:      params.material_cost  * P[t],
-      subcontract:   params.subcontract_cost * Ca[t]
+      period: t,
+      regular_labor:  regularCostPerWorker  * W[t],
+      overtime_labor: params.overtime_wage  * Oa[t],
+      hiring:         params.hiring_cost    * H[t],
+      firing:         params.firing_cost    * L[t],
+      inventory:      params.inventory_cost * Ia[t],
+      shortage:       params.shortage_cost  * Sa[t],
+      material:       params.material_cost  * P[t],
+      subcontract:    params.subcontract_cost * Ca[t]
     };
     cost_breakdown.push(cb);
     totalCost += cb.regular_labor + cb.overtime_labor + cb.hiring + cb.firing
@@ -1165,25 +1108,54 @@ function solveIPwithFixedW(lpRes, demand, params, T) {
   }
 
   return {
-    status:       'optimal',
-    total_cost:   Math.round(totalCost * 10) / 10,
-    model_type:   'IP',
-    periods:      T,
-    demand:       [0, ...demand],
-    W, H, L,
-    P,
-    I:  Ia,
-    S:  Sa,
-    C:  Ca,
-    O:  Oa,
-    cost_breakdown,
-    _solver:      'client-IP (2-pass fixed-W)',
-    _fromServer:  false,
-    params_used: {
-      regular_cost_per_worker: regularCostPerWorker,
-      prod_rate: prodRate
-    }
+    status:'optimal', total_cost: Math.round(totalCost*10)/10,
+    model_type:'IP', periods:T, demand:[0,...demand],
+    W, H, L, P, I:Ia, S:Sa, C:Ca, O:Oa, cost_breakdown,
+    _fromServer:false,
+    params_used:{ regular_cost_per_worker:regularCostPerWorker, prod_rate:prodRate }
   };
+}
+
+
+// ────────────────────────────────────────────────────────────────
+// 2-패스 IP: floor(W)와 ceil(W) 모두 시도 → 더 낮은 비용 선택
+//
+// [문제] floor만 하면 최적이 아닐 수 있음
+//   예) LP W≈85.3 → floor=85(비용 763,300) vs ceil=86(비용 763,220)
+//   → ceil이 더 싸지만 floor만 시도하면 놓침
+//
+// [해결] floor와 ceil 두 가지 W로 각각 LP를 풀고, 더 싼 결과를 반환
+// [외부 참고] 이 방식은 "rounding heuristic with neighbor search"라고 불림
+// ────────────────────────────────────────────────────────────────
+
+function solveIPwithFixedW(lpRes, demand, params, T) {
+  // ① W_floor: LP W를 내림
+  const W_floor = [params.initial_workers];
+  for (let t=1; t<=T; t++) W_floor.push(Math.floor(Math.max(0, lpRes.W[t]||0)));
+
+  // ② W_ceil: LP W를 올림
+  const W_ceil = [params.initial_workers];
+  for (let t=1; t<=T; t++) W_ceil.push(Math.ceil(Math.max(0, lpRes.W[t]||0)));
+
+  // ③ 두 가지 모두 LP로 풀기
+  const res_floor = _solveWithFixedWArray(W_floor, demand, params, T);
+
+  // floor와 ceil이 동일하면 ceil은 건너뜀 (계산 낭비 방지)
+  const isDiff = W_floor.some((w,i) => w !== W_ceil[i]);
+  const res_ceil = isDiff ? _solveWithFixedWArray(W_ceil, demand, params, T) : null;
+
+  // ④ 실현 가능한 해 중 비용이 낮은 것 선택
+  if (!res_floor && !res_ceil) return null;
+  if (!res_floor) { res_ceil._solver = 'client-IP (2-pass ceil-W)'; return res_ceil; }
+  if (!res_ceil)  { res_floor._solver = 'client-IP (2-pass floor-W)'; return res_floor; }
+
+  if (res_floor.total_cost <= res_ceil.total_cost) {
+    res_floor._solver = `client-IP (2-pass floor-W: ${Math.round(res_floor.total_cost)} ≤ ceil: ${Math.round(res_ceil.total_cost)})`;
+    return res_floor;
+  } else {
+    res_ceil._solver  = `client-IP (2-pass ceil-W: ${Math.round(res_ceil.total_cost)} < floor: ${Math.round(res_floor.total_cost)})`;
+    return res_ceil;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
